@@ -56,6 +56,7 @@
 #include <xtensor/xio.hpp> 
 #include <nlopt.hpp>
 #include <Eigen/Dense>
+#include <f1tenth_simulator/run_logger.h> //Revision: per-step CSV telemetry for the simulation campaign
 
 //C++ will auto typedef float3 data type
 int nMPC=0; //Defined outside class to be used in predefined functions for nlopt MPC calculation
@@ -359,6 +360,13 @@ class GapBarrier
 		double odomx=0, odomy=0, odomtheta=0;
 		double locx=0, locy=0, loctheta=0;
 		double simx=0, simy=0, simtheta=0;
+
+		// Revision (simulation campaign) members
+		int enable_logging=0;    // write per-step telemetry CSV when 1
+		std::string log_file="";  // output CSV path (empty => disabled)
+		RunLogger run_logger;    // per-control-step telemetry
+		double log_t0=-1;        // wall-clock start time for the run
+
 		std::vector<tf_data> past_tf;
 
 		//MPC MAP localization parameters
@@ -526,6 +534,13 @@ class GapBarrier
 			nf.getParam("angle_thresh", angle_thresh);
 			nf.getParam("map_thresh", map_thresh);
 			nf.getParam("use_map", use_map);
+
+			// Revision (simulation campaign): telemetry logging (off by default so
+			// hardware runs are unaffected). TTC for dynamic runs is derived offline
+			// from the logged adversary relative pose.
+			nf.param("enable_logging", enable_logging, 0);
+			nf.param<std::string>("log_file", log_file, std::string(""));
+			run_logger.init(log_file, enable_logging!=0);
 
 			//MPC init
 			default_dt=0.077;
@@ -2587,16 +2602,16 @@ class GapBarrier
 			
 
 				nlopt_set_min_objective(opt, myfunc, &track_line);
-				double tol[nMPC*kMPC-1]={1e-8};
-				double tol1[2*nMPC*kMPC+1]={1e-8};
+				std::vector<double> tol(nMPC*kMPC-1, 1e-8);
+				std::vector<double> tol1(2*nMPC*kMPC, 1e-8);
 				
 				
 				double opt_params[4]={vel_adapt*std::max(default_dt,dt),wheelbase,std::abs(max_servo_speed*std::max(default_dt,dt)),last_delta};
 				
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, theta_equality_con, &opt_params, tol);
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, x_equality_con, &opt_params, tol);
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, y_equality_con, &opt_params, tol);
-				nlopt_add_inequality_mconstraint(opt, 2*nMPC*kMPC, delta_inequality_con, &opt_params, tol1);
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, theta_equality_con, &opt_params, tol.data());
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, x_equality_con, &opt_params, tol.data());
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, y_equality_con, &opt_params, tol.data());
+				nlopt_add_inequality_mconstraint(opt, 2*nMPC*kMPC, delta_inequality_con, &opt_params, tol1.data());
 
 			
 				nlopt_set_xtol_rel(opt, 0.001); //Termination parameters
@@ -2659,10 +2674,16 @@ class GapBarrier
 				int successful_opt=0;
 
 				double minf; /* `*`the` `minimum` `objective` `value,` `upon` `return`*` */
+				// Revision: objective at the Algorithm-1 initial guess (grad=NULL is safe).
+				double J_init=myfunc(4*nMPC*kMPC, x, NULL, &track_line);
 				double opttime1=ros::Time::now().toSec();
 				nlopt_result optim= nlopt_optimize(opt, x, &minf); //This runs the optimization
 				double opttime2=ros::Time::now().toSec();
-				printf("OptTime: %lf, Evals: %d\n",opttime2-opttime1,nlopt_get_numevals(opt));
+				// Revision: capture solver statistics before opt is destroyed.
+				int n_evals=nlopt_get_numevals(opt);
+				double solve_time=opttime2-opttime1;
+				int timed_out=(solve_time>=0.0495)?1:0;
+				printf("OptTime: %lf, Evals: %d\n",solve_time,n_evals);
 
 
 				if(isnan(minf)){
@@ -2902,9 +2923,38 @@ class GapBarrier
 				printf("Steering Angle: %lf, Velocity: %lf\n",delta_d,velocity_MPC);
 				printf("*******************\n");
 
+				// Revision: per-control-step telemetry row. d_min is the closest raw
+				// LiDAR return in any direction (the paper's proximity metric); the
+				// adversary's tracked relative pose/speed is logged so that TTC can be
+				// computed offline for dynamic runs (det_active=0 on static runs).
+				if(run_logger.enabled()){
+					if(log_t0<0) log_t0=ros::Time::now().toSec();
+					double d_min_all=max_lidar_range+100;
+					for(size_t io=0;io<fused_ranges.size();io++){
+						double dd=fused_ranges[io];
+						if(dd>0.01 && dd<d_min_all) d_min_all=dd;
+					}
+					int det_active=(car_detects.size()>=1 && car_detects[0].init>=2)?1:0;
+					double det_x=0,det_y=0,det_th=0,det_v=0;
+					if(det_active){ det_x=car_detects[0].state[0]; det_y=car_detects[0].state[1];
+						det_th=car_detects[0].state[2]; det_v=car_detects[0].state[3]; }
+					run_logger.row({
+						{"t", ros::Time::now().toSec()-log_t0},
+						{"x", simx}, {"y", simy}, {"theta", simtheta},
+						{"v_cmd", velocity_MPC}, {"delta_cmd", delta_d},
+						{"d_min", d_min_all}, {"fwd_min", min_distance},
+						{"J_init", J_init}, {"J_final", minf},
+						{"iters", (double)n_evals}, {"solve_time", solve_time},
+						{"timeout", (double)timed_out}, {"forcestop", (double)forcestop},
+						{"success", (double)successful_opt},
+						{"det_active", (double)det_active},
+						{"det_x", det_x}, {"det_y", det_y}, {"det_theta", det_th}, {"det_v", det_v}
+					});
+				}
+
 			}
 
-			ackermann_msgs::AckermannDriveStamped drive_msg; 
+			ackermann_msgs::AckermannDriveStamped drive_msg;
 			drive_msg.header.stamp = ros::Time::now();
 			drive_msg.header.frame_id = "base_link";
 			if(startcheck==1){

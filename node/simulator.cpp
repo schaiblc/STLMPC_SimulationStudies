@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <cstdlib> //Revision (R4): rand() for per-beam dropout
 
 // interactive marker
 #include <interactive_markers/interactive_marker_server.h>
@@ -68,6 +69,19 @@ private:
     double detx=0;
     double dety=0;
     double dettheta=0;
+
+    // Revision (B5): parameterized scripted adversary + sensor degradation.
+    int adv_enable=0;               // move state_det along a scripted trajectory
+    double adv_speed=1.7;           // current adversary speed (mutated by "brake")
+    double adv_speed0=1.7;          // nominal adversary speed
+    std::string adv_maneuver="straight";
+    double adv_brake_decel=2.5, adv_brake_start=4.0;
+    double adv_swerve_rate=0.3, adv_swerve_start=4.0, adv_swerve_dur=1.0;
+    int adv2_enable=0;              // R3: second (occluding) adversary, scan-baked
+    Pose2D state_det2;
+    double adv2_speed=1.5;
+    double veh_det_length=0.5, veh_det_width=0.4; // adversary footprint for scan-baking
+    double beam_dropout_prob=0.0;   // R4: per-beam dropout probability
     double previous_seconds;
     double scan_distance_to_base_link;
     double max_speed, max_steering_angle;
@@ -177,7 +191,29 @@ public:
         // state = {.x=0, .y=0, .theta=0, .velocity=0, .steer_angle=0.0, .angular_velocity=0.0, .slip_angle=0.0, .st_dyn=false};
         // state_det.x=15; state_det.y=6.2; state_det.theta=0; //columbia
         // state_det.x=2; state_det.y=-0.2; state_det.theta=0; //berlin
-        state_det.x=2; state_det.y=0.4; state_det.theta=0.1; //levinelobby
+        state_det.x=2; state_det.y=0.4; state_det.theta=0.1; //levinelobby default
+
+        // Revision (B5): parameterized adversary + sensor-degradation params.
+        n.param("adv_enable", adv_enable, 0);
+        n.param("adv_init_x", state_det.x, state_det.x);
+        n.param("adv_init_y", state_det.y, state_det.y);
+        n.param("adv_init_theta", state_det.theta, state_det.theta);
+        n.param("adv_speed", adv_speed0, 1.7); adv_speed=adv_speed0;
+        n.param<std::string>("adv_maneuver", adv_maneuver, std::string("straight"));
+        n.param("adv_brake_decel", adv_brake_decel, 2.5);
+        n.param("adv_brake_start", adv_brake_start, 4.0);
+        n.param("adv_swerve_rate", adv_swerve_rate, 0.3);
+        n.param("adv_swerve_start", adv_swerve_start, 4.0);
+        n.param("adv_swerve_dur", adv_swerve_dur, 1.0);
+        n.param("adv2_enable", adv2_enable, 0);
+        n.param("adv2_init_x", state_det2.x, 3.0);
+        n.param("adv2_init_y", state_det2.y, 0.4);
+        n.param("adv2_init_theta", state_det2.theta, 0.1);
+        n.param("adv2_speed", adv2_speed, 1.5);
+        n.param("beam_dropout_prob", beam_dropout_prob, 0.0);
+        n.param("veh_det_length", veh_det_length, 0.5);
+        n.param("veh_det_width", veh_det_width, 0.4);
+
         start_time=ros::Time::now().toSec();
         accel = 0.0;
         steer_angle_vel = 0.0;
@@ -457,8 +493,31 @@ public:
         // }
 
 
-        //levinelobby map simulated trajectory for detected vehicle
-        if(ros::Time::now().toSec()<start_time+60+timeoffset && ros::Time::now().toSec()>start_time+timeoffset){
+        // Revision (B5): parameterized scripted adversary. When adv_enable=1 the
+        // adversary follows one of the maneuvers below (straight/brake/swerve),
+        // deliberately violating the constant-velocity/curvature prediction model
+        // to probe robustness. When adv_enable=0 the legacy levinelobby demo
+        // trajectory is retained so existing sim setups are unchanged.
+        if(adv_enable){
+            double tnow=ros::Time::now().toSec()-start_time;
+            // Brake maneuver (R1): decelerate after adv_brake_start.
+            if(adv_maneuver=="brake" && tnow>adv_brake_start){
+                adv_speed=std::max(0.0, adv_speed-adv_brake_decel*update_pose_rate);
+            }
+            state_det.x+=adv_speed*update_pose_rate*cos(state_det.theta);
+            state_det.y+=adv_speed*update_pose_rate*sin(state_det.theta);
+            // Swerve maneuver (R2): apply a yaw-rate impulse during the swerve window.
+            if(adv_maneuver=="swerve" && tnow>adv_swerve_start && tnow<adv_swerve_start+adv_swerve_dur){
+                state_det.theta+=adv_swerve_rate*update_pose_rate;
+            }
+            // Second adversary (R3), straight-line; affects ego only when scan-baked.
+            if(adv2_enable){
+                state_det2.x+=adv2_speed*update_pose_rate*cos(state_det2.theta);
+                state_det2.y+=adv2_speed*update_pose_rate*sin(state_det2.theta);
+            }
+        }
+        else if(ros::Time::now().toSec()<start_time+60+timeoffset && ros::Time::now().toSec()>start_time+timeoffset){
+            //levinelobby map simulated trajectory for detected vehicle (legacy demo)
             state_det.x+=myvel*update_pose_rate*cos(state_det.theta);
             state_det.y+=myvel*update_pose_rate*sin(state_det.theta);
             if(ros::Time::now().toSec()>start_time+1+timeoffset && ros::Time::now().toSec()<start_time+2+timeoffset){
@@ -479,10 +538,8 @@ public:
             if(ros::Time::now().toSec()>start_time+23+timeoffset && ros::Time::now().toSec()<start_time+25+timeoffset){
                 state_det.theta-=0.15*update_pose_rate;
             }
-            
-
         }
-        
+
         pub_pose_det_transform(timestamp);
 
 
@@ -575,6 +632,39 @@ public:
             // reset TTC
             if (no_collision)
                 TTC = false;
+
+            // Revision (R3): bake the two-vehicle scenario's adversary outlines into
+            // the ego scan so that the occlusion of one vehicle by the other is
+            // physically present in the LiDAR. Only active in the adv2_enable (two
+            // adversary) case; single-adversary runs keep the clean dynamic branch.
+            if(adv_enable && adv2_enable){
+                double angle_min=-M_PI;
+                double ainc=(2*M_PI)/scan_.size();
+                double hl=0.5*veh_det_length, hw=0.5*veh_det_width;
+                Pose2D advs[2]={state_det,state_det2};
+                for(int a=0;a<2;a++){
+                    double dx=advs[a].x-state.x, dy=advs[a].y-state.y;
+                    double xr= dx*cos(state.theta)+dy*sin(state.theta);
+                    double yr=-dx*sin(state.theta)+dy*cos(state.theta);
+                    double ct=cos(advs[a].theta-state.theta), st=sin(advs[a].theta-state.theta);
+                    double ox[5]={ hl, hl, 0.0, -hl, -hl};
+                    double oy[5]={-hw, hw, 0.0,  hw, -hw};
+                    for(int c=0;c<5;c++){
+                        double px=xr+ox[c]*ct-oy[c]*st;
+                        double py=yr+ox[c]*st+oy[c]*ct;
+                        double ang=atan2(py,px), dist=sqrt(px*px+py*py);
+                        int idx=(int)std::round((ang-angle_min)/ainc);
+                        if(idx>=0 && idx<(int)scan_.size() && dist<scan_[idx]) scan_[idx]=dist;
+                    }
+                }
+            }
+
+            // Revision (R4): random per-beam dropout (lost returns set to max range).
+            if(beam_dropout_prob>0.0){
+                for(size_t bi=0; bi<scan_.size(); bi++){
+                    if(((double)rand()/RAND_MAX) < beam_dropout_prob) scan_[bi]=100.0;
+                }
+            }
 
             // Publish the laser message
             sensor_msgs::LaserScan scan_msg;

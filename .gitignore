@@ -1,0 +1,41 @@
+# ---- catkin / ROS build artifacts ----
+build/
+devel/
+install/
+logs/
+.catkin_tools/
+*.catkin_workspace
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# ---- compiled objects / binaries ----
+*.o
+*.so
+*.a
+*.out
+*.exe
+*.pyc
+__pycache__/
+
+# ---- neural-net weights / large model files ----
+# (keep these out of git; store via releases or LFS if needed)
+*.pt
+*.pth
+*.weights
+*.onnx
+learning_models/*
+!learning_models/add_YOLO_here.txt
+
+# ---- telemetry / run outputs ----
+*.csv
+*.bag
+
+# ---- editor / OS cruft ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

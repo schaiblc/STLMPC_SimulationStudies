@@ -1,0 +1,81 @@
+<?xml version="1.0"?>
+<!-- campaign.launch -- headless launch for the STLMPC revision simulation
+     campaign (B1-B5). Loads params.yaml, then overrides the campaign knobs as
+     node-private params (which take effect because they are set AFTER the
+     rosparam load). No joystick / camera / rviz, so many runs can be batched
+     by scripts/run_campaign.sh. Select the planner with the "planner" arg:
+     navigation_STLMPC (static/dynamic, const v), navigation_STLMPC_vary_v
+     (racing, variable v), or navigation_FGM (gap-following baseline). -->
+<launch>
+  <arg name="map"            default="$(find f1tenth_simulator)/maps/map1.yaml"/>
+  <arg name="planner"        default="navigation_STLMPC"/>
+
+  <!-- logging -->
+  <arg name="log_file"       default=""/>
+  <arg name="enable_logging" default="1"/>
+
+  <!-- B1: horizon segmentation -->
+  <arg name="nMPC"           default="2"/>
+  <arg name="kMPC"           default="8"/>
+
+  <!-- B2: velocity-constraint ablation (vary_v only) -->
+  <arg name="enable_gvsteer" default="1"/>
+  <arg name="enable_gvobs"   default="1"/>
+  <arg name="hard_clamp_v"   default="0"/>
+
+  <!-- B4: MPPI baseline (vary_v only) -->
+  <arg name="use_mppi"       default="0"/>
+
+  <!-- B3: swept parameters (leave at nominal unless swept) -->
+  <arg name="d_dot_factor_STLMPC_vary_v" default="30"/>
+  <arg name="vel_factor_STLMPC_vary_v"   default="1"/>
+  <arg name="safe_distance"  default="2"/>
+  <arg name="vel_beta"       default="10"/>
+  <arg name="stop_distance_decay" default="0.5"/>
+  <arg name="theta_band_smooth"   default="200"/>
+
+  <!-- B5: adversary + sensor degradation -->
+  <arg name="adv_enable"     default="0"/>
+  <arg name="adv_maneuver"   default="straight"/>
+  <arg name="adv2_enable"    default="0"/>
+  <arg name="scan_std_dev"   default="0.01"/>
+  <arg name="beam_dropout_prob" default="0.0"/>
+
+  <arg name="map_server_map" default="$(arg map)"/>
+  <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_server_map)"/>
+  <include file="$(find f1tenth_simulator)/launch/racecar_model.launch"/>
+
+  <node pkg="f1tenth_simulator" name="f1tenth_simulator" type="simulator" output="screen">
+    <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+    <param name="adv_enable"        value="$(arg adv_enable)"/>
+    <param name="adv_maneuver"      value="$(arg adv_maneuver)"/>
+    <param name="adv2_enable"       value="$(arg adv2_enable)"/>
+    <param name="scan_std_dev"      value="$(arg scan_std_dev)"/>
+    <param name="beam_dropout_prob" value="$(arg beam_dropout_prob)"/>
+  </node>
+
+  <node pkg="f1tenth_simulator" name="mux_controller" type="mux" output="screen">
+    <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+  </node>
+  <node pkg="f1tenth_simulator" name="behavior_controller" type="behavior_controller" output="screen">
+    <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+  </node>
+
+  <node pkg="f1tenth_simulator" name="$(arg planner)" type="$(arg planner)" output="screen">
+    <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+    <param name="enable_logging"    value="$(arg enable_logging)"/>
+    <param name="log_file"          value="$(arg log_file)"/>
+    <param name="nMPC"              value="$(arg nMPC)"/>
+    <param name="kMPC"              value="$(arg kMPC)"/>
+    <param name="enable_gvsteer"    value="$(arg enable_gvsteer)"/>
+    <param name="enable_gvobs"      value="$(arg enable_gvobs)"/>
+    <param name="hard_clamp_v"      value="$(arg hard_clamp_v)"/>
+    <param name="use_mppi"          value="$(arg use_mppi)"/>
+    <param name="d_dot_factor_STLMPC_vary_v" value="$(arg d_dot_factor_STLMPC_vary_v)"/>
+    <param name="vel_factor_STLMPC_vary_v"   value="$(arg vel_factor_STLMPC_vary_v)"/>
+    <param name="safe_distance"     value="$(arg safe_distance)"/>
+    <param name="vel_beta"          value="$(arg vel_beta)"/>
+    <param name="stop_distance_decay" value="$(arg stop_distance_decay)"/>
+    <param name="theta_band_smooth" value="$(arg theta_band_smooth)"/>
+  </node>
+</launch>

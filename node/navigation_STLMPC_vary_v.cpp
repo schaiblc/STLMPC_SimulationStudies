@@ -56,6 +56,8 @@
 #include <xtensor/xio.hpp> 
 #include <nlopt.hpp>
 #include <Eigen/Dense>
+#include <random> //Revision: MPPI sampling baseline
+#include <f1tenth_simulator/run_logger.h> //Revision: per-step CSV telemetry for the simulation campaign
 
 //C++ will auto typedef float3 data type
 int nMPC=0; //Defined outside class to be used in predefined functions for nlopt MPC calculation
@@ -64,6 +66,24 @@ double d_factor=1; //Change weighting of d vs d_dot terms, etc in params.yaml
 double d_dot_factor=30;
 double delta_factor=1;
 double vel_factor=1; //Scale importance of higher velocities (racing), use default weights here
+
+// Revision (B2 ablation): file-scope toggles for the two soft velocity limits so
+// that vel_inequality_con can neutralize a specific constraint row without altering
+// the packed constraint/gradient indexing. Set from rosparams in the constructor.
+// 1 = constraint active (default, full method); 0 = constraint disabled.
+int en_gvsteer=1; // steering-angle-based velocity limit g_vsteer (Eq. 5.3.5)
+int en_gvobs=1;   // obstacle-proximity velocity limit g_vobs (Eq. 5.3.13)
+
+// Revision (R2.4 baseline): MPPI is a sampling-based alternative to the SQP solver,
+// run on the IDENTICAL STLMPC objective + constraints (constraints as quadratic
+// penalties). Comparing it to SLSQP on the same problem isolates the solver choice
+// and probes the local-optima concern. Defaults off; set from rosparams.
+int use_mppi=0;        // 1 => replace SLSQP with MPPI on the same formulation
+int mppi_K=256;        // rollout samples per iteration
+int mppi_iters=8;      // MPPI update iterations per control step
+double mppi_lambda=1.0;    // temperature
+double mppi_sd_delta=0.10; // steering sampling std (rad)
+double mppi_sd_v=0.30;     // velocity sampling std (m/s)
 
 
 struct float3
@@ -331,7 +351,12 @@ void vel_inequality_con(unsigned m, double *result, unsigned n, const double* x,
 			grad[(4*i+3)*n+4*nMPC*kMPC+i]=1;
 		}
 		result[4*i+3]=x[4*nMPC*kMPC+i]-vel_max*(1-exp(-(d_min-stop_dist)/stop_dist_decay));
-		
+
+		// Revision (B2 ablation): neutralize a disabled soft velocity limit by
+		// forcing its constraint value negative (always satisfied) with zero
+		// gradient, leaving the packed indexing of the other rows untouched.
+		if(!en_gvsteer){ result[4*i+2]=-1.0; if(grad){ for(unsigned c=0;c<n;c++) grad[(4*i+2)*n+c]=0; } }
+		if(!en_gvobs){   result[4*i+3]=-1.0; if(grad){ for(unsigned c=0;c<n;c++) grad[(4*i+3)*n+c]=0; } }
 
 	}
 
@@ -374,8 +399,87 @@ void vel_inequality_con(unsigned m, double *result, unsigned n, const double* x,
 	}
 	result[4*i+1]=x[4*nMPC*kMPC+i]-vel_max*(1-exp(-(d_min-stop_dist)/stop_dist_decay));
 
+	// Revision (B2 ablation): neutralize disabled soft limits at the last sample.
+	if(!en_gvsteer){ result[4*i]=-1.0;   if(grad){ for(unsigned c=0;c<n;c++) grad[(4*i)*n+c]=0; } }
+	if(!en_gvobs){   result[4*i+1]=-1.0; if(grad){ for(unsigned c=0;c<n;c++) grad[(4*i+1)*n+c]=0; } }
+
 }
 
+
+// Revision (R2.4 baseline): Model Predictive Path Integral (MPPI) optimizer on the
+// SAME STLMPC formulation as the SLSQP solve. The objective is myfunc() and the
+// kinematic-equality feasibility is guaranteed by rolling out the bicycle model
+// from the sampled controls (so h_x,h_y,h_theta hold by construction); the steering
+// -rate and velocity soft constraints are added as quadratic penalties via the same
+// delta_inequality_con / vel_inequality_con residuals used by the SQP solver. x[]
+// enters holding the Algorithm-1 initial guess (nominal control sequence) and exits
+// holding the MPPI solution [theta,delta,x,y,v] in the same 5*N layout myfunc uses.
+// Returns the final objective value (penalized cost's objective part).
+double mppi_optimize(double* x, void* obj_data,
+                     double delta_max, double v_min, double v_max,
+                     double dt, double L, double last_delta_v, double last_v,
+                     double* opt_params, double* opt_params_vel){
+    const int N = nMPC*kMPC;
+    const double pen = 1e3;               // constraint-penalty weight
+    std::vector<double> ud(N), uv(N);     // nominal control sequence
+    for(int i=0;i<N;i++){ ud[i]=x[N+i]; uv[i]=x[4*N+i]; }
+    ud[0]=last_delta_v; uv[0]=last_v;     // fixed first controls
+    std::mt19937 gen(1234567u);
+    std::normal_distribution<double> nrm(0.0,1.0);
+    std::vector<double> Xf(5*N);
+    std::vector<double> resd(2*N,0.0), resv(4*N-2,0.0);
+
+    // roll out one control sequence into Xf and return its penalized cost.
+    auto cost_of = [&](const std::vector<double>& d, const std::vector<double>& v)->double{
+        double th=0.0, px=0.0, py=0.0;
+        for(int i=0;i<N;i++){
+            Xf[i]=th; Xf[N+i]=d[i]; Xf[2*N+i]=px; Xf[3*N+i]=py; Xf[4*N+i]=v[i];
+            if(i<N-1){
+                double thn=th+dt*v[i]/L*tan(d[i]);
+                px=px+dt*v[i]*cos(th); py=py+dt*v[i]*sin(th); th=thn;
+            }
+        }
+        double c=myfunc(5*N, Xf.data(), NULL, obj_data);
+        delta_inequality_con(2*N, resd.data(), 5*N, Xf.data(), NULL, opt_params);
+        for(int j=0;j<2*N;j++) if(resd[j]>0) c+=pen*resd[j]*resd[j];
+        vel_inequality_con(4*N-2, resv.data(), 5*N, Xf.data(), NULL, opt_params_vel);
+        for(int j=0;j<4*N-2;j++) if(resv[j]>0) c+=pen*resv[j]*resv[j];
+        return c;
+    };
+
+    std::vector<std::vector<double>> ed(mppi_K, std::vector<double>(N,0.0));
+    std::vector<std::vector<double>> ev(mppi_K, std::vector<double>(N,0.0));
+    std::vector<double> costs(mppi_K), w(mppi_K);
+    std::vector<double> d(N), v(N);
+    for(int it=0; it<mppi_iters; ++it){
+        double cmin=1e300;
+        for(int k=0;k<mppi_K;k++){
+            d[0]=last_delta_v; v[0]=last_v; ed[k][0]=0; ev[k][0]=0;
+            for(int i=1;i<N;i++){
+                ed[k][i]=mppi_sd_delta*nrm(gen);
+                ev[k][i]=mppi_sd_v*nrm(gen);
+                d[i]=std::max(-delta_max,std::min(delta_max, ud[i]+ed[k][i]));
+                v[i]=std::max(v_min,std::min(v_max, uv[i]+ev[k][i]));
+            }
+            costs[k]=cost_of(d,v);
+            if(costs[k]<cmin) cmin=costs[k];
+        }
+        double wsum=0;
+        for(int k=0;k<mppi_K;k++){ w[k]=exp(-(costs[k]-cmin)/mppi_lambda); wsum+=w[k]; }
+        if(wsum<=0) wsum=1;
+        for(int i=1;i<N;i++){
+            double dd=0, dv=0;
+            for(int k=0;k<mppi_K;k++){ dd+=w[k]*ed[k][i]; dv+=w[k]*ev[k][i]; }
+            ud[i]=std::max(-delta_max,std::min(delta_max, ud[i]+dd/wsum));
+            uv[i]=std::max(v_min,std::min(v_max, uv[i]+dv/wsum));
+        }
+    }
+    // write the optimized nominal (and its rolled-out states) back into x[].
+    cost_of(ud,uv); // fills Xf with the final rolled-out trajectory
+    for(int i=0;i<5*N;i++) x[i]=Xf[i];
+    // return the objective part only (exclude penalties) for comparability with SLSQP.
+    return myfunc(5*N, Xf.data(), NULL, obj_data);
+}
 
 
 class GapBarrier 
@@ -492,6 +596,13 @@ class GapBarrier
 		double vel_beta=0;
 		double theta_band_smooth=0;
 		double theta_band_diff=0;
+
+		// Revision (simulation campaign) members
+		int hard_clamp_v=0;      // B2 V4: 1 => disable soft limits in-solver and clamp v_cmd post-hoc
+		int enable_logging=0;    // write per-step telemetry CSV when 1
+		std::string log_file="";  // output CSV path (empty => disabled)
+		RunLogger run_logger;    // per-control-step telemetry
+		double log_t0=-1;        // wall-clock start time for the run (set on first logged step)
 
 		//MPC parameters
 		//int nMPC, kMPC;
@@ -692,6 +803,23 @@ class GapBarrier
 			nf.getParam("angle_thresh", angle_thresh);
 			nf.getParam("map_thresh", map_thresh);
 			nf.getParam("use_map", use_map);
+
+			// Revision (simulation campaign): ablation toggles + telemetry logging.
+			// Defaults reproduce the full method with logging off, so hardware runs
+			// are unaffected unless these params are explicitly set.
+			nf.param("enable_gvsteer", en_gvsteer, 1);   // B2 V2: set 0 to drop g_vsteer
+			nf.param("enable_gvobs",   en_gvobs,   1);   // B2 V3: set 0 to drop g_vobs
+			nf.param("hard_clamp_v",   hard_clamp_v, 0); // B2 V4: 1 => hard post-hoc clamp
+			if(hard_clamp_v){ en_gvsteer=0; en_gvobs=0; } // V4 disables both in-solver soft limits
+			nf.param("use_mppi",   use_mppi, 0);          // B4: MPPI baseline on the same formulation
+			nf.param("mppi_K",     mppi_K, 256);
+			nf.param("mppi_iters", mppi_iters, 8);
+			nf.param("mppi_lambda", mppi_lambda, 1.0);
+			nf.param("mppi_sd_delta", mppi_sd_delta, 0.10);
+			nf.param("mppi_sd_v", mppi_sd_v, 0.30);
+			nf.param("enable_logging", enable_logging, 0);
+			nf.param<std::string>("log_file", log_file, std::string(""));
+			run_logger.init(log_file, enable_logging!=0);
 
 			//MPC init
 			default_dt=0.077;
@@ -2772,9 +2900,9 @@ class GapBarrier
 			
 
 				nlopt_set_min_objective(opt, myfunc, &track_line);
-				double tol[nMPC*kMPC-1]={1e-8};
-				double tol1[2*nMPC*kMPC+1]={1e-8};
-				double tol2[4*nMPC*kMPC-2]={1e-8};
+				std::vector<double> tol(nMPC*kMPC-1, 1e-8);
+				std::vector<double> tol1(2*nMPC*kMPC, 1e-8);
+				std::vector<double> tol2(4*nMPC*kMPC-2, 1e-8);
 				
 				
 				double opt_params[4]={std::max(default_dt,dt),wheelbase,std::abs(max_servo_speed*std::max(default_dt,dt)),last_delta};
@@ -2797,11 +2925,11 @@ class GapBarrier
 					opt_params_vel.push_back(sub_obs[i][1]);
 				}
 				
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, theta_equality_con, &opt_params, tol);
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, x_equality_con, &opt_params, tol);
-				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, y_equality_con, &opt_params, tol);
-				nlopt_add_inequality_mconstraint(opt, 2*nMPC*kMPC, delta_inequality_con, &opt_params, tol1);
-				nlopt_add_inequality_mconstraint(opt, 4*nMPC*kMPC-2, vel_inequality_con, opt_params_vel.data(), tol2);
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, theta_equality_con, &opt_params, tol.data());
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, x_equality_con, &opt_params, tol.data());
+				nlopt_add_equality_mconstraint(opt, nMPC*kMPC-1, y_equality_con, &opt_params, tol.data());
+				nlopt_add_inequality_mconstraint(opt, 2*nMPC*kMPC, delta_inequality_con, &opt_params, tol1.data());
+				nlopt_add_inequality_mconstraint(opt, 4*nMPC*kMPC-2, vel_inequality_con, opt_params_vel.data(), tol2.data());
 
 				nlopt_set_xtol_rel(opt, 0.001); //Termination parameters
 				nlopt_set_maxtime(opt, 0.05);
@@ -2878,10 +3006,26 @@ class GapBarrier
 				int successful_opt=0;
 
 				double minf; /* `*`the` `minimum` `objective` `value,` `upon` `return`*` */
+				// Revision: objective at the Algorithm-1 initial guess, evaluated before
+				// the solve (grad=NULL is safe as myfunc guards it). Substantiates the
+				// "effective initial guess" and convergence claims via J_init vs J_final.
+				double J_init=myfunc(5*nMPC*kMPC, x, NULL, &track_line);
 				double opttime1=ros::Time::now().toSec();
-				nlopt_result optim= nlopt_optimize(opt, x, &minf); //This runs the optimization
+				// Revision (R2.4): solve with MPPI on the identical formulation, or SLSQP.
+				nlopt_result optim=NLOPT_SUCCESS;
+				if(use_mppi){
+					minf = mppi_optimize(x, &track_line, max_steering_angle, min_speed, max_speed,
+						opt_params[0], opt_params[1], last_delta, vel_adapt,
+						opt_params, opt_params_vel.data());
+				} else {
+					optim = nlopt_optimize(opt, x, &minf); //This runs the optimization
+				}
 				double opttime2=ros::Time::now().toSec();
-				printf("OptTime: %lf, Evals: %d\n",opttime2-opttime1,nlopt_get_numevals(opt));
+				// Revision: capture solver statistics before opt is destroyed.
+				int n_evals = use_mppi ? (mppi_K*mppi_iters) : nlopt_get_numevals(opt);
+				double solve_time=opttime2-opttime1;
+				int timed_out=(solve_time>=0.0495)?1:0; // 50 ms maxtime => graceful timeout
+				printf("OptTime: %lf, Evals: %d\n",solve_time,n_evals);
 
 				if(isnan(minf)){
 					forcestop=1;
@@ -3170,9 +3314,44 @@ class GapBarrier
 				velocity_MPC = velocity_scale*vehicle_velocity; //Implement slowing if we near an obstacle
 
 				vel_adapt=std::max(std::min(vel_adapt,max_speed),min_speed);
+
+				// Revision (B2 V4): hard post-hoc velocity clamp. With the in-solver soft
+				// limits disabled (en_gvsteer=en_gvobs=0), enforce the same two limits
+				// outside the horizon by clamping the command to min(f_vsteer,f_vobs)
+				// evaluated at the current state. This is the "hard threshold" comparator.
+				if(hard_clamp_v){
+					double f_vsteer=max_speed/(1+pow(delta_d/max_steering_angle,2));
+					double f_vobs=max_speed*(1-exp(-(min_distance-stop_distance)/stop_distance_decay));
+					vel_adapt=std::max(0.0,std::min(vel_adapt,std::min(f_vsteer,f_vobs)));
+				}
+
 				if(min_distance<stop_distance) {vel_adapt=0; stopped=1;}
 				printf("Steering Angle: %lf, Velocity: %lf\n",delta_d,vel_adapt);
 				printf("*******************\n");
+
+				// Revision: per-control-step telemetry row (all solver locals and final
+				// commands are in scope here, at the end of the "normal" block). d_min is
+				// the closest obstacle to the current vehicle position over the subsampled
+				// set, matching the paper's proximity metric; min_distance is the forward
+				// passband proximity. TTC is not logged here (racing runs have no adversary).
+				if(run_logger.enabled()){
+					if(log_t0<0) log_t0=ros::Time::now().toSec();
+					double d_min_all=max_lidar_range+100;
+					for(int io=0;io<num_obs;io++){
+						double dd=hypot(sub_obs[io][0],sub_obs[io][1]);
+						if(dd<d_min_all) d_min_all=dd;
+					}
+					run_logger.row({
+						{"t", ros::Time::now().toSec()-log_t0},
+						{"x", simx}, {"y", simy}, {"theta", simtheta},
+						{"v_cmd", vel_adapt}, {"delta_cmd", delta_d},
+						{"d_min", d_min_all}, {"fwd_min", min_distance},
+						{"J_init", J_init}, {"J_final", minf},
+						{"iters", (double)n_evals}, {"solve_time", solve_time},
+						{"timeout", (double)timed_out}, {"forcestop", (double)forcestop},
+						{"success", (double)successful_opt}
+					});
+				}
 			}
 			ackermann_msgs::AckermannDriveStamped drive_msg; 
 			drive_msg.header.stamp = ros::Time::now();

@@ -305,6 +305,53 @@ max_lidar_range_opt: 5.0
 # Determines if RGB-D camera is used
 use_camera: 0
 
+# ==========================================================================
+# Revision simulation campaign (B1-B5) parameters. Defaults reproduce the
+# published method with logging OFF, so hardware runs are unaffected. These
+# are normally overridden per-run on the command line by scripts/run_campaign.py
+# (e.g. _enable_logging:=1 _log_file:=... _enable_gvobs:=0), not edited here.
+# ==========================================================================
+
+# --- Telemetry logging (both STLMPC nodes) ---
+enable_logging: 0          # 1 => write per-control-step CSV to log_file
+log_file: ""               # absolute path of the output CSV (empty => disabled)
+
+# --- B2 velocity-constraint ablation (navigation_STLMPC_vary_v only) ---
+enable_gvsteer: 1          # V2: set 0 to remove the steering-based soft velocity limit
+enable_gvobs: 1            # V3: set 0 to remove the obstacle-proximity soft velocity limit
+hard_clamp_v: 0            # V4: 1 => disable both soft limits in-solver, clamp v_cmd post-hoc
+
+# --- B4 MPPI baseline (navigation_STLMPC_vary_v only): sampling optimizer on the
+#     SAME objective + constraints as the SLSQP solve, to isolate the solver choice ---
+use_mppi: 0                # 1 => replace SLSQP with MPPI on the identical formulation
+mppi_K: 256                # rollout samples per iteration
+mppi_iters: 8              # MPPI update iterations per control step
+mppi_lambda: 1.0           # temperature
+mppi_sd_delta: 0.10        # steering sampling std (rad)
+mppi_sd_v: 0.30            # velocity sampling std (m/s)
+
+# --- B5 scripted adversary (simulator; use_neural_net:=0 with TF-based detection) ---
+adv_enable: 0              # 1 => move the detected vehicle along a scripted trajectory
+adv_init_x: 2.0            # adversary start pose in map frame (m)
+adv_init_y: 0.4
+adv_init_theta: 0.1        # (rad)
+adv_speed: 1.7             # nominal adversary forward speed (m/s)
+adv_maneuver: "straight"   # one of: straight | brake | swerve | occluded
+adv_brake_decel: 2.5       # R1: deceleration once braking begins (m/s^2)
+adv_brake_start: 4.0       # R1: time after start_time at which braking begins (s)
+adv_swerve_rate: 0.3       # R2: step steering magnitude for swerve (rad)
+adv_swerve_start: 4.0      # R2: time after start_time at which the swerve begins (s)
+adv_swerve_dur: 1.0        # R2: swerve duration (s)
+adv2_enable: 0             # R3: second adversary, initially occluded behind the first
+adv2_init_x: 3.0
+adv2_init_y: 0.4
+adv2_init_theta: 0.1
+adv2_speed: 1.5
+
+# --- B5-R4 sensor degradation (simulator) ---
+# scan_std_dev above already sets Gaussian range noise (0.01 paper / 0.03 / 0.05).
+beam_dropout_prob: 0.0     # probability each LiDAR beam is dropped (set invalid) per scan
+
 #Important tuning parameters
 #-> max_lidar_range_opt depending on hall width, open space, sim map, etc (same for safe_distance)
 #-> Max and min speeds for bezier (min speed>0) and velocity (min_speed can be 0)

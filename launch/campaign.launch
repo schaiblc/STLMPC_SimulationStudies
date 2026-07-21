@@ -78,4 +78,10 @@
     <param name="stop_distance_decay" value="$(arg stop_distance_decay)"/>
     <param name="theta_band_smooth" value="$(arg theta_band_smooth)"/>
   </node>
+
+  <!-- Optional visualization (gui:=true) for a single watchable run. Leave false
+       for the batch campaign so runs stay lightweight and headless. -->
+  <arg name="gui" default="false"/>
+  <node if="$(arg gui)" pkg="rviz" type="rviz" name="rviz"
+        args="-d $(find f1tenth_simulator)/launch/simulator.rviz"/>
 </launch>

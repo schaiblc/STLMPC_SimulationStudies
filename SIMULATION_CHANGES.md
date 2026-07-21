@@ -55,9 +55,24 @@ path (it is, via `include_directories(include ...)` in `CMakeLists.txt`).
 
 ```bash
 source ~/catkin_ws/devel/setup.bash
-OUT=~/stlmpc_logs SEEDS=10 RUN_SECONDS=60 \
-  rosrun f1tenth_simulator run_campaign.sh      # or: bash scripts/run_campaign.sh
+OUT=~/stlmpc_logs SEEDS=10 RUN_SECONDS=60 bash scripts/run_campaign.sh
+# Run a subset first (core ablations + baselines) with the ONLY filter:
+OUT=~/stlmpc_logs SEEDS=10 RUN_SECONDS=60 ONLY="B1 B2 B4" bash scripts/run_campaign.sh
 ```
+
+Maps: `maps/map1.yaml … map5.yaml` are the **simulation** maps (small tracks; every
+sim launch defaults to `map1`). `maps/experiment*.yaml` are the large AMCL grids from
+the **hardware** courses — NOT used by the sim campaign. Scenario type (static /
+dynamic / racing) comes from the **planner + adversary config**, not the map, so maps
+are chosen by their *features*:
+- `map4` (switchback, tight corners) → corner-dependent ablations B1/B2/B3, MPPI/SQP.
+- `map1` (also has corners) → 2nd curvy map for the B1 sequential-line ablation, R4 noise, FGM.
+- `map2` (open/corridor) → dynamic adversary encounters B5 R1/R2/R3.
+- `map3`, `map5` (unseen; #5 is a fork) → generalization (`B5-GEN-*`).
+
+Sim and hardware run on *different* environments (complementary: sim = breadth,
+hardware = real-world validation). If your `map1..map5` differ in character, swap the
+`MAPFILE` entries and the per-study `run_one` map arguments in `run_campaign.sh`.
 
 Before the full sweep, **do one dry run** and confirm two environment-specific
 things the template cannot verify for you:

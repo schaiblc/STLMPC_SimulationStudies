@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- campaign.launch -- headless launch for the STLMPC revision simulation
+<!-- campaign.launch headless launch for the STLMPC revision simulation
      campaign (B1-B5). Loads params.yaml, then overrides the campaign knobs as
      node-private params (which take effect because they are set AFTER the
      rosparam load). No joystick / camera / rviz, so many runs can be batched

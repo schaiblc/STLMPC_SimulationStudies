@@ -352,6 +352,18 @@ adv2_speed: 1.5
 # scan_std_dev above already sets Gaussian range noise (0.01 paper / 0.03 / 0.05).
 beam_dropout_prob: 0.0     # probability each LiDAR beam is dropped (set invalid) per scan
 
+# --- Ego + adversary start poses ---
+# Per-map spawn poses live in config/map_starts.yaml (single source of truth),
+# selected by the map_name arg in campaign.launch. The ego/adversary are placed
+# there at startup AND reset to them the instant nav is enabled, so the dynamic
+# scenario is reproducible. Note: use_neural_net (above) must be 1 for the ego to
+# actually plan around the tracked adversary; campaign.launch defaults it to
+# adv_enable so dynamic runs turn it on automatically.
+
+# --- Deterministic navigation start (behavior_controller) ---
+auto_nav: 0                # 1 => auto-enable nav after auto_nav_delay (no hand-typed 'n')
+auto_nav_delay: 3.0        # seconds after node start before nav is auto-enabled
+
 #Important tuning parameters
 #-> max_lidar_range_opt depending on hall width, open space, sim map, etc (same for safe_distance)
 #-> Max and min speeds for bezier (min speed>0) and velocity (min_speed can be 0)

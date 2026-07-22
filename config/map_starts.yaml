@@ -1,0 +1,86 @@
+# =====================================================================
+# Per-map start poses -- SINGLE SOURCE OF TRUTH for the simulation campaign.
+#
+# One block per map, keyed by the map basename (map_name arg in campaign.launch).
+# Each block defines, in the map frame:
+#   ego_*   : where/what heading the ego vehicle spawns
+#   adv_*   : where/what heading the scripted adversary spawns (adv_enable:=1)
+#   adv2_*  : second (occluding) adversary spawn (adv2_enable:=1)
+#
+# These values are used throughout a run. The simulator ALSO snaps the ego and
+# adversaries back to exactly these poses the instant navigation is enabled, so
+# every run starts from an identical configuration regardless of when nav starts.
+#
+# theta is in radians (0 = +x map axis, CCW positive).
+#
+# To (re)capture a pose for a map in ~30 s:
+#   1. roslaunch ... campaign.launch gui:=true map_name:=<name>
+#   2. In rviz use "2D Pose Estimate" to drop the ego where/how it should start.
+#   3. The simulator prints the pose in this exact YAML form to its console --
+#      paste it into that map's block below. Place the adversary a couple metres
+#      ahead of / crossing the ego's initial heading for a real collision course.
+# =====================================================================
+map_starts:
+
+  # Levine lobby -- proven legacy values; the ego drives the loop cleanly and the
+  # adversary sits ~2 m ahead as a braking lead vehicle. Do not change without cause.
+  map1:
+    ego_x:  0.0
+    ego_y:  0.0
+    ego_theta: 0.0
+    adv_x:  2.0
+    adv_y:  0.4
+    adv_theta: 0.1
+    adv2_x: 3.0
+    adv2_y: 0.4
+    adv2_theta: 0.1
+
+  # TODO(capture): (0,0,0) is drivable on map2 but the heading is not aligned with
+  # the track start -- capture a proper ego pose in rviz (see header) and set the
+  # adversary on the ego's forward path. Placeholder keeps position, zeroes heading.
+  map2:
+    ego_x:  0.0
+    ego_y:  0.0
+    ego_theta: 0.0
+    adv_x:  2.0
+    adv_y:  0.4
+    adv_theta: 0.1
+    adv2_x: 3.0
+    adv2_y: 0.4
+    adv2_theta: 0.1
+
+  # TODO(capture): set from rviz.
+  map3:
+    ego_x:  0.0
+    ego_y:  0.0
+    ego_theta: 0.0
+    adv_x:  2.0
+    adv_y:  0.4
+    adv_theta: 0.1
+    adv2_x: 3.0
+    adv2_y: 0.4
+    adv2_theta: 0.1
+
+  # TODO(capture): set from rviz.
+  map4:
+    ego_x:  0.0
+    ego_y:  0.0
+    ego_theta: 0.0
+    adv_x:  2.0
+    adv_y:  0.4
+    adv_theta: 0.1
+    adv2_x: 3.0
+    adv2_y: 0.4
+    adv2_theta: 0.1
+
+  # TODO(capture): set from rviz.
+  map5:
+    ego_x:  0.0
+    ego_y:  0.0
+    ego_theta: 0.0
+    adv_x:  2.0
+    adv_y:  0.4
+    adv_theta: 0.1
+    adv2_x: 3.0
+    adv2_y: 0.4
+    adv2_theta: 0.1

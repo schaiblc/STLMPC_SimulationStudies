@@ -82,6 +82,18 @@ private:
     double adv2_speed=1.5;
     double veh_det_length=0.5, veh_det_width=0.4; // adversary footprint for scan-baking
     double beam_dropout_prob=0.0;   // R4: per-beam dropout probability
+
+    // Per-map start poses (single source of truth, from config/map_starts.yaml).
+    // The ego and adversaries are placed here at construction and snapped back to
+    // them the instant nav is enabled, so every run starts identically.
+    double adv_init_x=2.0, adv_init_y=0.4, adv_init_theta=0.1;    // adversary spawn
+    double adv2_init_x=3.0, adv2_init_y=0.4, adv2_init_theta=0.1; // second adversary spawn
+    double ego_init_x=0.0, ego_init_y=0.0, ego_init_theta=0.0;   // ego spawn
+    std::string map_name="map1"; // selects the block in map_starts.yaml
+    int nav_mux_idx=4;           // mux slot that signals autonomous nav is active
+    int nav_started=0;           // latched true once nav is first enabled
+    ros::Subscriber mux_sub;     // watch the mux to anchor the adversary clock to nav-enable
+
     double previous_seconds;
     double scan_distance_to_base_link;
     double max_speed, max_steering_angle;
@@ -191,13 +203,38 @@ public:
         // state = {.x=0, .y=0, .theta=0, .velocity=0, .steer_angle=0.0, .angular_velocity=0.0, .slip_angle=0.0, .st_dyn=false};
         // state_det.x=15; state_det.y=6.2; state_det.theta=0; //columbia
         // state_det.x=2; state_det.y=-0.2; state_det.theta=0; //berlin
-        state_det.x=2; state_det.y=0.4; state_det.theta=0.1; //levinelobby default
-
         // Revision (B5): parameterized adversary + sensor-degradation params.
         n.param("adv_enable", adv_enable, 0);
-        n.param("adv_init_x", state_det.x, state_det.x);
-        n.param("adv_init_y", state_det.y, state_det.y);
-        n.param("adv_init_theta", state_det.theta, state_det.theta);
+
+        // Per-map start poses (single source of truth). map_starts.yaml is loaded
+        // into this node's namespace by campaign.launch; the block for the current
+        // map_name supplies both the ego spawn and the adversary spawn(s). These are
+        // the values used throughout the run (and the ego + adversaries are reset to
+        // them the instant nav is enabled, see mux_callback). Any pose can still be
+        // overridden per-run with an explicit *_init_* private param.
+        n.param<std::string>("map_name", map_name, std::string("map1"));
+        std::string mb = "map_starts/" + map_name + "/";
+        // fall back to the legacy levinelobby (map1) values if the map is not tabled
+        n.param(mb+"ego_x",      ego_init_x,      0.0);
+        n.param(mb+"ego_y",      ego_init_y,      0.0);
+        n.param(mb+"ego_theta",  ego_init_theta,  0.0);
+        n.param(mb+"adv_x",      adv_init_x,      2.0);
+        n.param(mb+"adv_y",      adv_init_y,      0.4);
+        n.param(mb+"adv_theta",  adv_init_theta,  0.1);
+        n.param(mb+"adv2_x",     adv2_init_x,     3.0);
+        n.param(mb+"adv2_y",     adv2_init_y,     0.4);
+        n.param(mb+"adv2_theta", adv2_init_theta, 0.1);
+        // explicit per-run overrides still win over the table
+        n.param("ego_init_x",     ego_init_x,      ego_init_x);
+        n.param("ego_init_y",     ego_init_y,      ego_init_y);
+        n.param("ego_init_theta", ego_init_theta,  ego_init_theta);
+        n.param("adv_init_x",     adv_init_x,      adv_init_x);
+        n.param("adv_init_y",     adv_init_y,      adv_init_y);
+        n.param("adv_init_theta", adv_init_theta,  adv_init_theta);
+        n.param("adv2_init_x",    adv2_init_x,     adv2_init_x);
+        n.param("adv2_init_y",    adv2_init_y,     adv2_init_y);
+        n.param("adv2_init_theta",adv2_init_theta, adv2_init_theta);
+
         n.param("adv_speed", adv_speed0, 1.7); adv_speed=adv_speed0;
         n.param<std::string>("adv_maneuver", adv_maneuver, std::string("straight"));
         n.param("adv_brake_decel", adv_brake_decel, 2.5);
@@ -206,13 +243,18 @@ public:
         n.param("adv_swerve_start", adv_swerve_start, 4.0);
         n.param("adv_swerve_dur", adv_swerve_dur, 1.0);
         n.param("adv2_enable", adv2_enable, 0);
-        n.param("adv2_init_x", state_det2.x, 3.0);
-        n.param("adv2_init_y", state_det2.y, 0.4);
-        n.param("adv2_init_theta", state_det2.theta, 0.1);
         n.param("adv2_speed", adv2_speed, 1.5);
         n.param("beam_dropout_prob", beam_dropout_prob, 0.0);
         n.param("veh_det_length", veh_det_length, 0.5);
         n.param("veh_det_width", veh_det_width, 0.4);
+        n.param("nav_mux_idx", nav_mux_idx, 4);
+
+        // Place the ego and adversaries at their defined start poses.
+        state.x=ego_init_x; state.y=ego_init_y; state.theta=ego_init_theta;
+        state.velocity=0.0; state.steer_angle=0.0; state.angular_velocity=0.0;
+        state.slip_angle=0.0; state.st_dyn=false;
+        state_det.x=adv_init_x; state_det.y=adv_init_y; state_det.theta=adv_init_theta;
+        state_det2.x=adv2_init_x; state_det2.y=adv2_init_y; state_det2.theta=adv2_init_theta;
 
         start_time=ros::Time::now().toSec();
         accel = 0.0;
@@ -327,6 +369,12 @@ public:
         obs_sub = n.subscribe("/clicked_point", 1, &RacecarSimulator::obs_callback, this);
 
         tf_sub = n.subscribe("/tf", 20, &RacecarSimulator::tf_callback, this);
+
+        // Watch the mux so the scripted-adversary timeline can be anchored to the
+        // moment navigation is enabled (see mux_callback).
+        std::string mux_topic;
+        n.getParam("mux_topic", mux_topic);
+        mux_sub = n.subscribe(mux_topic, 1, &RacecarSimulator::mux_callback, this);
 
         // get collision safety margin
         n.getParam("coll_threshold", thresh);
@@ -498,7 +546,7 @@ public:
         // deliberately violating the constant-velocity/curvature prediction model
         // to probe robustness. When adv_enable=0 the legacy levinelobby demo
         // trajectory is retained so existing sim setups are unchanged.
-        if(adv_enable){
+        if(adv_enable && nav_started){
             double tnow=ros::Time::now().toSec()-start_time;
             // Brake maneuver (R1): decelerate after adv_brake_start.
             if(adv_maneuver=="brake" && tnow>adv_brake_start){
@@ -516,7 +564,7 @@ public:
                 state_det2.y+=adv2_speed*update_pose_rate*sin(state_det2.theta);
             }
         }
-        else if(ros::Time::now().toSec()<start_time+60+timeoffset && ros::Time::now().toSec()>start_time+timeoffset){
+        else if(nav_started && ros::Time::now().toSec()<start_time+60+timeoffset && ros::Time::now().toSec()>start_time+timeoffset){
             //levinelobby map simulated trajectory for detected vehicle (legacy demo)
             state_det.x+=myvel*update_pose_rate*cos(state_det.theta);
             state_det.y+=myvel*update_pose_rate*sin(state_det.theta);
@@ -712,6 +760,30 @@ public:
 
 		}
 
+    // Revision (B5): anchor the scripted-adversary timeline to the moment autonomous
+    // navigation is enabled, and (re)place the ego + adversaries at their defined
+    // start poses. Without this the adversary's maneuver runs off the sim-launch
+    // clock and finishes while the car is still parked waiting for the "n" key, so
+    // the ego only ever sees an already-stopped obstacle. Anchoring here makes the
+    // dynamic scenario reproducible: the ego always witnesses the full maneuver from
+    // an identical initial configuration, no matter when nav is switched on.
+    void mux_callback(const std_msgs::Int32MultiArray::ConstPtr& msg){
+        int active = (nav_mux_idx>=0 && nav_mux_idx<(int)msg->data.size()) ? msg->data[nav_mux_idx] : 0;
+        if(active && !nav_started){
+            nav_started=1;
+            start_time=ros::Time::now().toSec();
+            adv_speed=adv_speed0;
+            // reset ego to its defined spawn
+            state.x=ego_init_x; state.y=ego_init_y; state.theta=ego_init_theta;
+            state.velocity=0.0; state.steer_angle=0.0; state.angular_velocity=0.0;
+            state.slip_angle=0.0;
+            // reset adversaries to their defined spawns
+            state_det.x=adv_init_x; state_det.y=adv_init_y; state_det.theta=adv_init_theta;
+            state_det2.x=adv2_init_x; state_det2.y=adv2_init_y; state_det2.theta=adv2_init_theta;
+            ROS_INFO("Nav enabled: adversary timeline started; ego + adversaries reset to map '%s' start poses.", map_name.c_str());
+        }
+    }
+
         /// ---------------------- GENERAL HELPER FUNCTIONS ----------------------
 
     std::vector<int> ind_2_rc(int ind) {
@@ -851,6 +923,14 @@ public:
         temp_pose.header = msg->header;
         temp_pose.pose = msg->pose.pose;
         pose_callback(temp_pose);
+
+        // Revision: echo the dropped pose in map_starts.yaml form so per-map start
+        // poses can be captured once from rviz ("2D Pose Estimate") and pasted in.
+        tf2::Quaternion quat(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
+                             msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+        double yaw = tf2::impl::getYaw(quat);
+        ROS_INFO("[start-pose capture] paste into map_starts.yaml under '%s':\n  ego_x: %.4f\n  ego_y: %.4f\n  ego_theta: %.4f",
+                 map_name.c_str(), msg->pose.pose.position.x, msg->pose.pose.position.y, yaw);
     }
 
     void drive_callback(const ackermann_msgs::AckermannDriveStamped & msg) {

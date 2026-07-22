@@ -87,6 +87,12 @@ private:
     double beginning_seconds;
     int collision_count=0;
 
+    // Revision: deterministic hands-free nav start (batch/reproducible runs)
+    bool auto_nav=false;
+    double auto_nav_delay=3.0;
+    bool auto_nav_done=false;
+    ros::Timer auto_nav_timer;
+
 
 public:
     BehaviorController() {
@@ -179,6 +185,23 @@ public:
         collision_file.open(ros::package::getPath("f1tenth_simulator") + "/logs/" + filename + ".txt");
         beginning_seconds = ros::Time::now().toSec();
 
+        // Revision: optionally auto-enable navigation after a fixed delay so batch
+        // runs do not depend on a hand-typed "n". Combined with the simulator's
+        // nav-anchored adversary clock, this makes dynamic runs fully reproducible.
+        n.param("auto_nav", auto_nav, false);
+        n.param("auto_nav_delay", auto_nav_delay, 3.0);
+        if (auto_nav) {
+            auto_nav_timer = n.createTimer(ros::Duration(auto_nav_delay),
+                &BehaviorController::auto_nav_callback, this, true); // oneshot
+        }
+
+    }
+
+    void auto_nav_callback(const ros::TimerEvent&) {
+        if (auto_nav_done) return;
+        auto_nav_done = true;
+        ROS_INFO("Auto-enabling navigation (auto_nav_delay elapsed).");
+        change_controller(nav_mux_idx);
     }
 
     /// ---------------------- GENERAL HELPER FUNCTIONS ----------------------

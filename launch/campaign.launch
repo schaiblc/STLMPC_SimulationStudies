@@ -7,7 +7,11 @@
      navigation_STLMPC (static/dynamic, const v), navigation_STLMPC_vary_v
      (racing, variable v), or navigation_FGM (gap-following baseline). -->
 <launch>
-  <arg name="map"            default="$(find f1tenth_simulator)/maps/map1.yaml"/>
+  <!-- Select the map by basename (map1..map5). The full path is derived from it and
+       is also the key into config/map_starts.yaml for the ego/adversary start poses.
+       Pass a full path via map:= only to use a map that is not in the start table. -->
+  <arg name="map_name"       default="map1"/>
+  <arg name="map"            default="$(find f1tenth_simulator)/maps/$(arg map_name).yaml"/>
   <arg name="planner"        default="navigation_STLMPC"/>
 
   <!-- logging -->
@@ -41,12 +45,24 @@
   <arg name="scan_std_dev"   default="0.01"/>
   <arg name="beam_dropout_prob" default="0.0"/>
 
+  <!-- Avoidance of the tracked adversary (TF-based; needs no camera). Defaults ON
+       whenever an adversary is enabled, so dynamic runs actually plan around it. -->
+  <arg name="use_neural_net" default="$(arg adv_enable)"/>
+
+  <!-- Deterministic navigation start. auto_nav:=1 removes the hand-typed 'n' for
+       batch runs. Either way the simulator anchors the adversary timeline to the
+       nav-enable instant, so the ego always sees the full maneuver. -->
+  <arg name="auto_nav"       default="0"/>
+  <arg name="auto_nav_delay" default="3.0"/>
+
   <arg name="map_server_map" default="$(arg map)"/>
   <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_server_map)"/>
   <include file="$(find f1tenth_simulator)/launch/racecar_model.launch"/>
 
   <node pkg="f1tenth_simulator" name="f1tenth_simulator" type="simulator" output="screen">
     <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+    <rosparam command="load" file="$(find f1tenth_simulator)/config/map_starts.yaml"/>
+    <param name="map_name"          value="$(arg map_name)"/>
     <param name="adv_enable"        value="$(arg adv_enable)"/>
     <param name="adv_maneuver"      value="$(arg adv_maneuver)"/>
     <param name="adv2_enable"       value="$(arg adv2_enable)"/>
@@ -59,12 +75,15 @@
   </node>
   <node pkg="f1tenth_simulator" name="behavior_controller" type="behavior_controller" output="screen">
     <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
+    <param name="auto_nav"          value="$(arg auto_nav)"/>
+    <param name="auto_nav_delay"    value="$(arg auto_nav_delay)"/>
   </node>
 
   <node pkg="f1tenth_simulator" name="$(arg planner)" type="$(arg planner)" output="screen">
     <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
     <param name="enable_logging"    value="$(arg enable_logging)"/>
     <param name="log_file"          value="$(arg log_file)"/>
+    <param name="use_neural_net"    value="$(arg use_neural_net)"/>
     <param name="nMPC"              value="$(arg nMPC)"/>
     <param name="kMPC"              value="$(arg kMPC)"/>
     <param name="enable_gvsteer"    value="$(arg enable_gvsteer)"/>

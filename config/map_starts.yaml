@@ -33,7 +33,7 @@ map_starts:
     ego_theta: 0.0
     goal_x: 0.0
     goal_y: 0.0
-    goal_radius: 1.0
+    goal_radius: 2.0
 
   # Open/corridor map used for the dynamic (adversary) cases R1/R2/R3. ego_theta was
   # rotated to align with the track start; because the adversary is ego-relative it
@@ -44,16 +44,16 @@ map_starts:
     ego_theta: 2.19
     goal_x: 0.0
     goal_y: 0.0
-    goal_radius: 1.0
+    goal_radius: 2.5
 
   # TODO(capture): set ego + goal from rviz. If point-to-point, set goal_* to the finish.
   map3:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    goal_x: 0.0
+    goal_x: -2.8
     goal_y: 0.0
-    goal_radius: 1.0
+    goal_radius: 1.5
 
   # TODO(capture): switchback map for most ablations -- likely point-to-point, so
   # capture the FINISH end for goal_* (not the start) so t_tot is the traverse time.
@@ -63,13 +63,13 @@ map_starts:
     ego_theta: 0.0
     goal_x: 0.0
     goal_y: 0.0
-    goal_radius: 1.0
+    goal_radius: 1.5
 
   # TODO(capture): forked layout -- set ego + goal (finish end) from rviz.
   map5:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    goal_x: 0.0
-    goal_y: 0.0
-    goal_radius: 1.0
+    goal_x: 25.0
+    goal_y: 0.7
+    goal_radius: 1.5

@@ -72,7 +72,7 @@
        reaches the per-map goal (config/map_starts.yaml) after leaving it by
        goal_arm_dist, or (failure) after run_timeout. shutdown_on_goal:=1 makes the
        simulator end the launch on either outcome (set for batch runs). -->
-  <arg name="goal_arm_dist"    default="2.0"/>
+  <arg name="goal_arm_dist"    default="5.0"/>
   <arg name="run_timeout"      default="60.0"/>
   <arg name="shutdown_on_goal" default="0"/>
 

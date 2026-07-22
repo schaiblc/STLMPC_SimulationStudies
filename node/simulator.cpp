@@ -75,14 +75,14 @@ private:
 
     // Revision (B5): parameterized scripted adversary + sensor degradation.
     int adv_enable=0;               // move state_det along a scripted trajectory
-    double adv_speed=1.7;           // current adversary speed (mutated by "brake")
-    double adv_speed0=1.7;          // nominal adversary speed
+    double adv_speed=1.3;           // current adversary speed (mutated by "brake")
+    double adv_speed0=1.3;          // nominal adversary speed
     std::string adv_maneuver="straight";
     double adv_brake_decel=2.5, adv_brake_start=4.0;
     double adv_swerve_rate=0.3, adv_swerve_start=4.0, adv_swerve_dur=1.0;
     int adv2_enable=0;              // R3: second (occluding) adversary, scan-baked
     Pose2D state_det2;
-    double adv2_speed=1.5;
+    double adv2_speed=1.3;
     double veh_det_length=0.5, veh_det_width=0.4; // adversary footprint for scan-baking
     double beam_dropout_prob=0.0;   // R4: per-beam dropout probability
 
@@ -241,11 +241,11 @@ public:
         n.param(mb+"ego_y",      ego_init_y,      0.0);
         n.param(mb+"ego_theta",  ego_init_theta,  0.0);
         n.param(mb+"adv_x",      adv_init_x,      2.0);
-        n.param(mb+"adv_y",      adv_init_y,      0.4);
-        n.param(mb+"adv_theta",  adv_init_theta,  0.1);
+        n.param(mb+"adv_y",      adv_init_y,      -0.4);
+        n.param(mb+"adv_theta",  adv_init_theta,  -0.1);
         n.param(mb+"adv2_x",     adv2_init_x,     3.0);
-        n.param(mb+"adv2_y",     adv2_init_y,     0.4);
-        n.param(mb+"adv2_theta", adv2_init_theta, 0.1);
+        n.param(mb+"adv2_y",     adv2_init_y,     -0.4);
+        n.param(mb+"adv2_theta", adv2_init_theta, -0.1);
         n.param(mb+"goal_x",     goal_x,          ego_init_x);
         n.param(mb+"goal_y",     goal_y,          ego_init_y);
         n.param(mb+"goal_radius",goal_radius,     1.0);
@@ -295,7 +295,8 @@ public:
         // to the ego (forward/left/heading offset), so the encounter geometry stays
         // correct on any map and for any ego heading. Geometry defaults are chosen
         // per maneuver:
-        //   brake  -> same-direction lead ~4.5 m ahead that brakes to a stall in path
+        //   brake  -> lead into the right-hand bend: front-right (~3.5 m ahead, 2 m to
+        //             starboard), heading angled right, that brakes to a stall in path
         //   swerve -> ~90 deg crosser from port (~4 m ahead, 2.5 m to the left)
         //   straight/occluded -> crosser(s); R3's second vehicle sits just behind the
         //                        first along the ego's line of sight so it is occluded
@@ -310,7 +311,7 @@ public:
         n.param("adv2_left",      adv2_left,      UNSET);
         n.param("adv2_rel_theta", adv2_rel_theta, UNSET);
         double df=4.0, dl=2.5, drt=-M_PI/2;          // straight/occluded crosser default
-        if(adv_maneuver=="brake"){ df=4.5; dl=0.0; drt=0.0; }       // same-direction lead
+        if(adv_maneuver=="brake"){ df=3.5; dl=-1.0; drt=-1.2; }     // lead into the right-hand bend (front-right, angled right)
         else if(adv_maneuver=="swerve"){ df=4.0; dl=2.5; drt=-M_PI/2; } // port crosser
         if(adv_forward==UNSET)    adv_forward=df;
         if(adv_left==UNSET)       adv_left=dl;

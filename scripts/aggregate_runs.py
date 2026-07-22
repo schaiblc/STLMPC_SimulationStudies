@@ -13,11 +13,15 @@ for Table \ref{tab:sim_ablation} / \ref{tab:sim_robust}.
 
 Definitions
 -----------
-collision : min over the run of d_min < --collision-radius (default 0.15 m).
-completed : if a finish region is given (--finish-x/-y/-radius), reaching it
-            without collision; otherwise, simply not colliding.
-t_course  : time to reach the finish region (if given) else the run duration,
-            reported for completed runs only.
+finish    : per-map goal (goal_x/goal_y/goal_radius) read from config/map_starts.yaml
+            by the run's map token, or a global override via --finish-x/-y/-radius.
+completed : reaching the finish region -- AFTER first leaving it by --arm-dist, so a
+            lap whose finish == start is not "complete" at t=0 -- without collision.
+            With no finish region, simply not colliding.
+collision : min over the run (up to completion) of d_min < --collision-radius (0.15 m).
+t_course  : time at which the finish region is reached, reported for completed runs
+            only. Metrics are evaluated up to that instant, so post-finish coasting
+            or a second-lap crash does not pollute the reported course.
 success rate : fraction of a config's seeds that completed.
 
 Pure Python stdlib (csv, glob, statistics, argparse) so it runs anywhere.
@@ -43,10 +47,64 @@ def col(rows, name):
     return out
 
 
-def summarize_run(path, collision_radius, finish):
+def parse_map_starts(path):
+    """Minimal parser for config/map_starts.yaml -> {map_name: {key: float}}."""
+    out, cur = {}, None
+    if not path or not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].rstrip("\n")
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            body = line.strip()
+            if indent == 2 and body.endswith(":"):
+                cur = body[:-1].strip()
+                out[cur] = {}
+            elif indent >= 4 and cur is not None and ":" in body:
+                k, v = body.split(":", 1)
+                try:
+                    out[cur][k.strip()] = float(v.strip())
+                except ValueError:
+                    pass
+    return out
+
+
+def finish_for_map(map_token, map_goals, default_radius):
+    """(goal_x, goal_y, radius) for a filename's map token, or None."""
+    blk = map_goals.get("map" + str(map_token))
+    if not blk or "goal_x" not in blk or "goal_y" not in blk:
+        return None
+    return (blk["goal_x"], blk["goal_y"], blk.get("goal_radius", default_radius))
+
+
+def summarize_run(path, collision_radius, finish, arm_dist):
     rows = load_rows(path)
     if not rows:
         return None
+
+    # completion: first row within the finish region AFTER first leaving it by
+    # arm_dist, so a lap whose finish == start is not "complete" at t=0.
+    reached, comp_idx = False, len(rows) - 1
+    if finish is not None:
+        fx, fy, fr = finish
+        armed = False
+        for i, r in enumerate(rows):
+            try:
+                d = math.hypot(float(r["x"]) - fx, float(r["y"]) - fy)
+            except (KeyError, ValueError):
+                continue
+            if d > arm_dist:
+                armed = True
+            if armed and d < fr:
+                reached, comp_idx = True, i
+                break
+
+    # Evaluate metrics only up to completion, so post-finish coasting or a crash on
+    # a second lap does not pollute the reported course.
+    rows = rows[:comp_idx + 1]
+
     dmin = col(rows, "d_min")
     v = col(rows, "v_cmd")
     dsteer = [abs(x) for x in col(rows, "delta_cmd")]
@@ -58,20 +116,13 @@ def summarize_run(path, collision_radius, finish):
     min_dmin = min(dmin) if dmin else math.nan
     collided = (min_dmin < collision_radius) if dmin else True
 
-    # completion / course time
-    reached, t_course = False, (t[-1] if t else math.nan)
+    # completion / course time (t_course reported for completed runs only)
     if finish is not None:
-        fx, fy, fr = finish
-        for r in rows:
-            try:
-                if math.hypot(float(r["x"]) - fx, float(r["y"]) - fy) < fr:
-                    reached, t_course = True, float(r["t"])
-                    break
-            except (KeyError, ValueError):
-                pass
         completed = reached and not collided
+        t_course = (t[-1] if t else math.nan) if reached else math.nan
     else:
         completed = not collided
+        t_course = t[-1] if t else math.nan
 
     def mean(a):
         return statistics.fmean(a) if a else math.nan
@@ -118,15 +169,25 @@ def main():
     ap.add_argument("--collision-radius", type=float, default=0.15)
     ap.add_argument("--finish-x", type=float)
     ap.add_argument("--finish-y", type=float)
-    ap.add_argument("--finish-radius", type=float, default=0.5)
+    ap.add_argument("--finish-radius", type=float, default=1.0)
+    ap.add_argument("--arm-dist", type=float, default=2.0,
+                    help="ego must leave the finish region by this much before a "
+                         "return counts as completion (matches goal_arm_dist)")
+    ap.add_argument("--map-starts",
+                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "..", "config", "map_starts.yaml"),
+                    help="per-map goals; used when --finish-x/-y are not given")
     ap.add_argument("--out", default="summary.csv")
     ap.add_argument("--latex", action="store_true",
                     help="also print LaTeX \\ms{mean}{std} cells per config")
     args = ap.parse_args()
 
-    finish = None
+    # A global --finish-x/-y overrides everything; otherwise each run's finish is
+    # looked up per map from map_starts.yaml (single source of truth).
+    global_finish = None
     if args.finish_x is not None and args.finish_y is not None:
-        finish = (args.finish_x, args.finish_y, args.finish_radius)
+        global_finish = (args.finish_x, args.finish_y, args.finish_radius)
+    map_goals = parse_map_starts(args.map_starts)
 
     runs = {}  # config -> list of per-run dicts
     for path in sorted(glob.glob(os.path.join(args.log_dir, "*.csv"))):
@@ -134,7 +195,9 @@ def main():
         if not m:
             print("  skip (name):", os.path.basename(path))
             continue
-        s = summarize_run(path, args.collision_radius, finish)
+        finish = global_finish if global_finish is not None \
+            else finish_for_map(m.group("map"), map_goals, args.finish_radius)
+        s = summarize_run(path, args.collision_radius, finish, args.arm_dist)
         if s:
             runs.setdefault(m.group("config"), []).append(s)
 

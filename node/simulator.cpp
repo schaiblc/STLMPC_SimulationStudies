@@ -14,6 +14,8 @@
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
 #include <std_msgs/Int32MultiArray.h>
+#include <std_msgs/Bool.h>
+#include <visualization_msgs/MarkerArray.h>
 
 #include <sensor_msgs/LaserScan.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
@@ -36,6 +38,7 @@
 
 #include <tf/tf.h>
 #include <iostream>
+#include <cstdio>
 #include <math.h>
 #include <utility>
 #include <fstream>
@@ -86,13 +89,32 @@ private:
     // Per-map start poses (single source of truth, from config/map_starts.yaml).
     // The ego and adversaries are placed here at construction and snapped back to
     // them the instant nav is enabled, so every run starts identically.
-    double adv_init_x=2.0, adv_init_y=0.4, adv_init_theta=0.1;    // adversary spawn
-    double adv2_init_x=3.0, adv2_init_y=0.4, adv2_init_theta=0.1; // second adversary spawn
+    double adv_init_x=2.0, adv_init_y=0.4, adv_init_theta=0.1;    // adversary spawn (map frame)
+    double adv2_init_x=3.0, adv2_init_y=0.4, adv2_init_theta=0.1; // second adversary spawn (map frame)
     double ego_init_x=0.0, ego_init_y=0.0, ego_init_theta=0.0;   // ego spawn
+    // Adversary placement relative to the ego (heading-invariant): +forward along the
+    // ego heading, +left to port, rel_theta = heading offset. Defaults chosen per
+    // maneuver in the constructor. adv_relative=0 falls back to absolute adv_init_*.
+    int adv_relative=1;
+    double adv_forward=4.5, adv_left=0.0, adv_rel_theta=0.0;
+    double adv2_forward=5.0, adv2_left=2.9, adv2_rel_theta=-1.5707963;
     std::string map_name="map1"; // selects the block in map_starts.yaml
     int nav_mux_idx=4;           // mux slot that signals autonomous nav is active
     int nav_started=0;           // latched true once nav is first enabled
     ros::Subscriber mux_sub;     // watch the mux to anchor the adversary clock to nav-enable
+
+    // Course-completion goal (from map_starts.yaml) + run termination. The run ends
+    // (success) when the ego reaches the goal after first leaving it by goal_arm_dist,
+    // or (timeout) when run_timeout elapses after nav-enable.
+    double goal_x=0.0, goal_y=0.0, goal_radius=1.0;
+    double goal_arm_dist=2.0;    // ego must get this far from goal before a reach counts
+    double run_timeout=60.0;     // s after nav-enable before a run is declared timed-out
+    int shutdown_on_goal=0;      // 1 => ros::shutdown() when the run ends (batch mode)
+    int goal_armed=0, goal_reached=0, run_over=0;
+    ros::Publisher run_complete_pub; // latched std_msgs/Bool: true=completed, false=timeout
+    ros::Timer shutdown_timer;   // brief grace before shutdown so logs flush
+    ros::Publisher goal_marker_pub; // rviz: goal sphere + radius ring + label
+    int goal_marker_tick=0;      // throttle goal-marker republishing
 
     double previous_seconds;
     double scan_distance_to_base_link;
@@ -224,6 +246,9 @@ public:
         n.param(mb+"adv2_x",     adv2_init_x,     3.0);
         n.param(mb+"adv2_y",     adv2_init_y,     0.4);
         n.param(mb+"adv2_theta", adv2_init_theta, 0.1);
+        n.param(mb+"goal_x",     goal_x,          ego_init_x);
+        n.param(mb+"goal_y",     goal_y,          ego_init_y);
+        n.param(mb+"goal_radius",goal_radius,     1.0);
         // explicit per-run overrides still win over the table
         n.param("ego_init_x",     ego_init_x,      ego_init_x);
         n.param("ego_init_y",     ego_init_y,      ego_init_y);
@@ -248,6 +273,60 @@ public:
         n.param("veh_det_length", veh_det_length, 0.5);
         n.param("veh_det_width", veh_det_width, 0.4);
         n.param("nav_mux_idx", nav_mux_idx, 4);
+
+        // Course-completion goal + run termination. goal defaults to the ego spawn
+        // (return-to-start = one lap) unless the map block overrides it.
+        n.param("goal_x", goal_x, goal_x);
+        n.param("goal_y", goal_y, goal_y);
+        n.param("goal_radius", goal_radius, goal_radius);
+        n.param("goal_arm_dist", goal_arm_dist, 2.0);
+        n.param("run_timeout", run_timeout, 60.0);
+        n.param("shutdown_on_goal", shutdown_on_goal, 0);
+
+        // Per-seed randomized start (paper: +/-0.3 m, +/-10 deg), applied on top of
+        // the table pose so map_starts.yaml stays the single source of truth.
+        double jx=0.0, jy=0.0, jt=0.0;
+        n.param("ego_jitter_x", jx, 0.0);
+        n.param("ego_jitter_y", jy, 0.0);
+        n.param("ego_jitter_theta", jt, 0.0);
+        ego_init_x+=jx; ego_init_y+=jy; ego_init_theta+=jt;
+
+        // Adversary placement. By default the adversary(ies) are positioned RELATIVE
+        // to the ego (forward/left/heading offset), so the encounter geometry stays
+        // correct on any map and for any ego heading. Geometry defaults are chosen
+        // per maneuver:
+        //   brake  -> same-direction lead ~4.5 m ahead that brakes to a stall in path
+        //   swerve -> ~90 deg crosser from port (~4 m ahead, 2.5 m to the left)
+        //   straight/occluded -> crosser(s); R3's second vehicle sits just behind the
+        //                        first along the ego's line of sight so it is occluded
+        // Set adv_relative:=0 to use absolute adv_init_* map coordinates instead, and
+        // adv_forward/adv_left/adv_rel_theta (and adv2_*) to override the geometry.
+        n.param("adv_relative", adv_relative, 1);
+        const double UNSET=-999.0;
+        n.param("adv_forward",    adv_forward,    UNSET);
+        n.param("adv_left",       adv_left,       UNSET);
+        n.param("adv_rel_theta",  adv_rel_theta,  UNSET);
+        n.param("adv2_forward",   adv2_forward,   UNSET);
+        n.param("adv2_left",      adv2_left,      UNSET);
+        n.param("adv2_rel_theta", adv2_rel_theta, UNSET);
+        double df=4.0, dl=2.5, drt=-M_PI/2;          // straight/occluded crosser default
+        if(adv_maneuver=="brake"){ df=4.5; dl=0.0; drt=0.0; }       // same-direction lead
+        else if(adv_maneuver=="swerve"){ df=4.0; dl=2.5; drt=-M_PI/2; } // port crosser
+        if(adv_forward==UNSET)    adv_forward=df;
+        if(adv_left==UNSET)       adv_left=dl;
+        if(adv_rel_theta==UNSET)  adv_rel_theta=drt;
+        if(adv2_forward==UNSET)   adv2_forward=5.0;
+        if(adv2_left==UNSET)      adv2_left=2.9;
+        if(adv2_rel_theta==UNSET) adv2_rel_theta=-M_PI/2;
+        if(adv_relative){
+            double th=ego_init_theta;
+            adv_init_x = ego_init_x + adv_forward*std::cos(th) - adv_left*std::sin(th);
+            adv_init_y = ego_init_y + adv_forward*std::sin(th) + adv_left*std::cos(th);
+            adv_init_theta = th + adv_rel_theta;
+            adv2_init_x = ego_init_x + adv2_forward*std::cos(th) - adv2_left*std::sin(th);
+            adv2_init_y = ego_init_y + adv2_forward*std::sin(th) + adv2_left*std::cos(th);
+            adv2_init_theta = th + adv2_rel_theta;
+        }
 
         // Place the ego and adversaries at their defined start poses.
         state.x=ego_init_x; state.y=ego_init_y; state.theta=ego_init_theta;
@@ -347,6 +426,13 @@ public:
 
         waypoint_pub = n.advertise<nav_msgs::Path>("/waypoints", 1);
 
+        // Latched run-outcome flag (true=course completed, false=timed out).
+        run_complete_pub = n.advertise<std_msgs::Bool>("/run_complete", 1, true);
+
+        // Latched goal visualization (sphere + radius ring + label) for rviz, so the
+        // per-map goal can be eyeballed before running.
+        goal_marker_pub = n.advertise<visualization_msgs::MarkerArray>("/goal_marker", 1, true);
+
         // Start a timer to output the pose
         update_pose_timer = n.createTimer(ros::Duration(update_pose_rate), &RacecarSimulator::update_pose, this);
 
@@ -442,6 +528,8 @@ public:
         im_server.setCallback(clear_obs_button.name, boost::bind(&RacecarSimulator::clear_obstacles, this, _1));
 
         im_server.applyChanges();
+
+        publish_goal_marker(); // latched, so rviz shows the goal immediately
 
         ROS_INFO("Simulator constructed.");
     }
@@ -590,7 +678,8 @@ public:
 
         pub_pose_det_transform(timestamp);
 
-
+        // Revision: course-completion / timeout check (see check_completion).
+        check_completion();
 
 
         //////////////////////////////////////////////
@@ -780,8 +869,101 @@ public:
             // reset adversaries to their defined spawns
             state_det.x=adv_init_x; state_det.y=adv_init_y; state_det.theta=adv_init_theta;
             state_det2.x=adv2_init_x; state_det2.y=adv2_init_y; state_det2.theta=adv2_init_theta;
+            goal_armed=0; goal_reached=0; run_over=0;
             ROS_INFO("Nav enabled: adversary timeline started; ego + adversaries reset to map '%s' start poses.", map_name.c_str());
         }
+    }
+
+    // Revision: end the run on course completion or timeout, so a reached goal is
+    // logged as a lap/course time instead of every trial running to the wall-clock
+    // cap. Completion requires the ego to first leave the goal region by
+    // goal_arm_dist (so a lap whose finish == start is not "completed" at t=0), then
+    // return within goal_radius. On timeout the outcome is published as failure.
+    void check_completion(){
+        if(!nav_started || run_over) return;
+        double d = std::sqrt(std::pow(state.x-goal_x,2)+std::pow(state.y-goal_y,2));
+        if(!goal_armed && d>goal_arm_dist) goal_armed=1;
+        if(goal_armed && d<goal_radius){
+            goal_reached=1;
+            ROS_INFO("[completion] COURSE COMPLETE on map '%s' in %.2f s (goal within %.2f m).",
+                     map_name.c_str(), ros::Time::now().toSec()-start_time, goal_radius);
+            finish_run(true);
+        }
+        else if(ros::Time::now().toSec()-start_time > run_timeout){
+            ROS_WARN("[completion] TIMEOUT on map '%s' after %.1f s (goal not reached).",
+                     map_name.c_str(), run_timeout);
+            finish_run(false);
+        }
+    }
+
+    void finish_run(bool completed){
+        run_over=1;
+        // halt the ego and hold it (drive_callback is ignored while run_over)
+        first_ttc_actions();
+        std_msgs::Bool m; m.data=completed; run_complete_pub.publish(m);
+        if(shutdown_on_goal){
+            // brief grace so the planner flushes its final CSV row, then end the run
+            shutdown_timer = n.createTimer(ros::Duration(1.0),
+                &RacecarSimulator::shutdown_cb, this, true); // oneshot
+        }
+    }
+
+    void shutdown_cb(const ros::TimerEvent&){ ros::shutdown(); }
+
+    // Revision: draw the course goal in rviz -- a filled marker at (goal_x, goal_y)
+    // and a ring of radius goal_radius around it -- so the per-map goal can be
+    // verified visually before a run. Green when a run is active/pending, dimmed
+    // once the goal has been reached.
+    void publish_goal_marker(){
+        visualization_msgs::MarkerArray arr;
+        ros::Time now=ros::Time::now();
+        double g = goal_reached ? 0.4 : 1.0; // dim after completion
+
+        visualization_msgs::Marker center;
+        center.header.frame_id="map"; center.header.stamp=now;
+        center.ns="goal"; center.id=0;
+        center.type=visualization_msgs::Marker::SPHERE;
+        center.action=visualization_msgs::Marker::ADD;
+        center.pose.position.x=goal_x; center.pose.position.y=goal_y; center.pose.position.z=0.15;
+        center.pose.orientation.w=1.0;
+        center.scale.x=center.scale.y=center.scale.z=0.35;
+        center.color.r=0.0; center.color.g=g; center.color.b=0.0; center.color.a=0.9;
+        arr.markers.push_back(center);
+
+        visualization_msgs::Marker ring;
+        ring.header.frame_id="map"; ring.header.stamp=now;
+        ring.ns="goal"; ring.id=1;
+        ring.type=visualization_msgs::Marker::LINE_STRIP;
+        ring.action=visualization_msgs::Marker::ADD;
+        ring.pose.orientation.w=1.0;
+        ring.scale.x=0.06; // line width
+        ring.color.r=0.0; ring.color.g=g; ring.color.b=0.0; ring.color.a=0.9;
+        const int N=64;
+        for(int i=0;i<=N;i++){
+            double a=2.0*M_PI*i/N;
+            geometry_msgs::Point p;
+            p.x=goal_x+goal_radius*std::cos(a);
+            p.y=goal_y+goal_radius*std::sin(a);
+            p.z=0.05;
+            ring.points.push_back(p);
+        }
+        arr.markers.push_back(ring);
+
+        visualization_msgs::Marker label;
+        label.header.frame_id="map"; label.header.stamp=now;
+        label.ns="goal"; label.id=2;
+        label.type=visualization_msgs::Marker::TEXT_VIEW_FACING;
+        label.action=visualization_msgs::Marker::ADD;
+        label.pose.position.x=goal_x; label.pose.position.y=goal_y; label.pose.position.z=0.6;
+        label.pose.orientation.w=1.0;
+        label.scale.z=0.4;
+        label.color.r=0.0; label.color.g=g; label.color.b=0.0; label.color.a=1.0;
+        char buf[80];
+        snprintf(buf,sizeof(buf),"GOAL (r=%.2f m)",goal_radius);
+        label.text=buf;
+        arr.markers.push_back(label);
+
+        goal_marker_pub.publish(arr);
     }
 
         /// ---------------------- GENERAL HELPER FUNCTIONS ----------------------
@@ -934,6 +1116,7 @@ public:
     }
 
     void drive_callback(const ackermann_msgs::AckermannDriveStamped & msg) {
+        if(run_over){ desired_speed=0.0; desired_steer_ang=0.0; return; } // hold after run end
         desired_speed = msg.drive.speed;
         desired_steer_ang = msg.drive.steering_angle;
     }
@@ -952,6 +1135,10 @@ public:
     }
 
       void generateWaypoints(const ros::TimerEvent& event) {
+        // Republish the goal marker at ~1 Hz (this timer runs at 10 Hz) so late rviz
+        // subscribers and the post-completion dim are reflected.
+        if(goal_marker_tick++ % 10 == 0) publish_goal_marker();
+
         if(use_manual_fwd==0){
             return;
         }

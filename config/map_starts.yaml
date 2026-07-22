@@ -1,86 +1,75 @@
 # =====================================================================
-# Per-map start poses -- SINGLE SOURCE OF TRUTH for the simulation campaign.
+# Per-map ego start + course goal -- SINGLE SOURCE OF TRUTH for the campaign.
 #
-# One block per map, keyed by the map basename (map_name arg in campaign.launch).
-# Each block defines, in the map frame:
-#   ego_*   : where/what heading the ego vehicle spawns
-#   adv_*   : where/what heading the scripted adversary spawns (adv_enable:=1)
-#   adv2_*  : second (occluding) adversary spawn (adv2_enable:=1)
+# One block per map, keyed by the map basename (map_name arg in campaign.launch):
+#   ego_*   : where/what heading the ego vehicle spawns (map frame)
+#   goal_*  : course-completion region. The run ENDS (success) the first time the
+#             ego is within goal_radius of (goal_x, goal_y) AFTER first leaving it by
+#             the arm distance (goal_arm_dist, a campaign.launch arg, default 2 m).
+#             For a LOOP set goal_* = ego_* (return-to-start). For a POINT-TO-POINT
+#             course set goal_* to the finish end. goal_radius defaults to 1.0 m.
 #
-# These values are used throughout a run. The simulator ALSO snaps the ego and
-# adversaries back to exactly these poses the instant navigation is enabled, so
-# every run starts from an identical configuration regardless of when nav starts.
+# The ADVERSARY is NOT listed here: it is placed RELATIVE to the ego (forward/left/
+# heading offset) so its encounter geometry stays correct for any ego heading on any
+# map, with the geometry chosen per adv_maneuver in the simulator:
+#   brake  -> same-direction lead that brakes to a stall in the ego's path
+#   swerve -> ~90 deg crosser from port that cuts into the corridor
+#   straight + adv2_enable -> two crossers, the second initially occluded (R3)
+# Override via adv_forward/adv_left/adv_rel_theta (+adv2_*) in campaign.launch, or
+# set adv_relative:=0 and pass absolute adv_init_x/y/theta for a bespoke placement.
 #
 # theta is in radians (0 = +x map axis, CCW positive).
 #
-# To (re)capture a pose for a map in ~30 s:
-#   1. roslaunch ... campaign.launch gui:=true map_name:=<name>
-#   2. In rviz use "2D Pose Estimate" to drop the ego where/how it should start.
-#   3. The simulator prints the pose in this exact YAML form to its console --
-#      paste it into that map's block below. Place the adversary a couple metres
-#      ahead of / crossing the ego's initial heading for a real collision course.
+# Capture a pose in rviz: launch with gui:=true map_name:=<name>, use "2D Pose
+# Estimate" for the ego (or the finish point); the simulator prints the pose in this
+# YAML form to paste into ego_* (or goal_*). The green goal ring shows goal_radius.
 # =====================================================================
 map_starts:
 
-  # Levine lobby -- proven legacy values; the ego drives the loop cleanly and the
-  # adversary sits ~2 m ahead as a braking lead vehicle. Do not change without cause.
+  # Levine lobby -- proven ego pose; loop, so goal = start.
   map1:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    adv_x:  2.0
-    adv_y:  0.4
-    adv_theta: 0.1
-    adv2_x: 3.0
-    adv2_y: 0.4
-    adv2_theta: 0.1
+    goal_x: 0.0
+    goal_y: 0.0
+    goal_radius: 1.0
 
-  # TODO(capture): (0,0,0) is drivable on map2 but the heading is not aligned with
-  # the track start -- capture a proper ego pose in rviz (see header) and set the
-  # adversary on the ego's forward path. Placeholder keeps position, zeroes heading.
+  # Open/corridor map used for the dynamic (adversary) cases R1/R2/R3. ego_theta was
+  # rotated to align with the track start; because the adversary is ego-relative it
+  # stays correctly placed ahead of the ego. goal defaults to the loop (= start).
   map2:
     ego_x:  0.0
     ego_y:  0.0
-    ego_theta: 0.0
-    adv_x:  2.0
-    adv_y:  0.4
-    adv_theta: 0.1
-    adv2_x: 3.0
-    adv2_y: 0.4
-    adv2_theta: 0.1
+    ego_theta: 2.19
+    goal_x: 0.0
+    goal_y: 0.0
+    goal_radius: 1.0
 
-  # TODO(capture): set from rviz.
+  # TODO(capture): set ego + goal from rviz. If point-to-point, set goal_* to the finish.
   map3:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    adv_x:  2.0
-    adv_y:  0.4
-    adv_theta: 0.1
-    adv2_x: 3.0
-    adv2_y: 0.4
-    adv2_theta: 0.1
+    goal_x: 0.0
+    goal_y: 0.0
+    goal_radius: 1.0
 
-  # TODO(capture): set from rviz.
+  # TODO(capture): switchback map for most ablations -- likely point-to-point, so
+  # capture the FINISH end for goal_* (not the start) so t_tot is the traverse time.
   map4:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    adv_x:  2.0
-    adv_y:  0.4
-    adv_theta: 0.1
-    adv2_x: 3.0
-    adv2_y: 0.4
-    adv2_theta: 0.1
+    goal_x: 0.0
+    goal_y: 0.0
+    goal_radius: 1.0
 
-  # TODO(capture): set from rviz.
+  # TODO(capture): forked layout -- set ego + goal (finish end) from rviz.
   map5:
     ego_x:  0.0
     ego_y:  0.0
     ego_theta: 0.0
-    adv_x:  2.0
-    adv_y:  0.4
-    adv_theta: 0.1
-    adv2_x: 3.0
-    adv2_y: 0.4
-    adv2_theta: 0.1
+    goal_x: 0.0
+    goal_y: 0.0
+    goal_radius: 1.0

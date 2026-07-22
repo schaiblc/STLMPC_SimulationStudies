@@ -365,6 +365,14 @@ Visualization Manager:
         {}
       Queue Size: 100
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /goal_marker
+      Name: Goal
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
     - Alpha: 1
       Arrow Length: 0.20000000298023224
       Axes Length: 0.30000001192092896

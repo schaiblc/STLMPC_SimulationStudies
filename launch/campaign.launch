@@ -45,6 +45,19 @@
   <arg name="scan_std_dev"   default="0.01"/>
   <arg name="beam_dropout_prob" default="0.0"/>
 
+  <!-- Adversary placement: ego-relative by default (heading-invariant), with the
+       geometry chosen per adv_maneuver (brake=lead, swerve/straight=crosser). Leave
+       the offsets at -999 to use those per-maneuver defaults, or set them (m, m, rad
+       in the ego frame: +forward, +left, heading offset) to retune. adv_relative:=0
+       uses absolute adv_init_* map coordinates instead. -->
+  <arg name="adv_relative"   default="1"/>
+  <arg name="adv_forward"    default="-999.0"/>
+  <arg name="adv_left"       default="-999.0"/>
+  <arg name="adv_rel_theta"  default="-999.0"/>
+  <arg name="adv2_forward"   default="-999.0"/>
+  <arg name="adv2_left"      default="-999.0"/>
+  <arg name="adv2_rel_theta" default="-999.0"/>
+
   <!-- Avoidance of the tracked adversary (TF-based; needs no camera). Defaults ON
        whenever an adversary is enabled, so dynamic runs actually plan around it. -->
   <arg name="use_neural_net" default="$(arg adv_enable)"/>
@@ -55,19 +68,47 @@
   <arg name="auto_nav"       default="0"/>
   <arg name="auto_nav_delay" default="3.0"/>
 
+  <!-- Course completion + run termination. The run ends (success) when the ego
+       reaches the per-map goal (config/map_starts.yaml) after leaving it by
+       goal_arm_dist, or (failure) after run_timeout. shutdown_on_goal:=1 makes the
+       simulator end the launch on either outcome (set for batch runs). -->
+  <arg name="goal_arm_dist"    default="2.0"/>
+  <arg name="run_timeout"      default="60.0"/>
+  <arg name="shutdown_on_goal" default="0"/>
+
+  <!-- Per-seed randomized start offset (paper: +/-0.3 m, +/-10 deg), added on top
+       of the map_starts.yaml pose so that file stays the single source of truth. -->
+  <arg name="ego_jitter_x"     default="0.0"/>
+  <arg name="ego_jitter_y"     default="0.0"/>
+  <arg name="ego_jitter_theta" default="0.0"/>
+
   <arg name="map_server_map" default="$(arg map)"/>
   <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_server_map)"/>
   <include file="$(find f1tenth_simulator)/launch/racecar_model.launch"/>
 
-  <node pkg="f1tenth_simulator" name="f1tenth_simulator" type="simulator" output="screen">
+  <node pkg="f1tenth_simulator" name="f1tenth_simulator" type="simulator" output="screen"
+        required="true">
     <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
     <rosparam command="load" file="$(find f1tenth_simulator)/config/map_starts.yaml"/>
     <param name="map_name"          value="$(arg map_name)"/>
     <param name="adv_enable"        value="$(arg adv_enable)"/>
     <param name="adv_maneuver"      value="$(arg adv_maneuver)"/>
     <param name="adv2_enable"       value="$(arg adv2_enable)"/>
+    <param name="adv_relative"      value="$(arg adv_relative)"/>
+    <param name="adv_forward"       value="$(arg adv_forward)"/>
+    <param name="adv_left"          value="$(arg adv_left)"/>
+    <param name="adv_rel_theta"     value="$(arg adv_rel_theta)"/>
+    <param name="adv2_forward"      value="$(arg adv2_forward)"/>
+    <param name="adv2_left"         value="$(arg adv2_left)"/>
+    <param name="adv2_rel_theta"    value="$(arg adv2_rel_theta)"/>
     <param name="scan_std_dev"      value="$(arg scan_std_dev)"/>
     <param name="beam_dropout_prob" value="$(arg beam_dropout_prob)"/>
+    <param name="goal_arm_dist"     value="$(arg goal_arm_dist)"/>
+    <param name="run_timeout"       value="$(arg run_timeout)"/>
+    <param name="shutdown_on_goal"  value="$(arg shutdown_on_goal)"/>
+    <param name="ego_jitter_x"      value="$(arg ego_jitter_x)"/>
+    <param name="ego_jitter_y"      value="$(arg ego_jitter_y)"/>
+    <param name="ego_jitter_theta"  value="$(arg ego_jitter_theta)"/>
   </node>
 
   <node pkg="f1tenth_simulator" name="mux_controller" type="mux" output="screen">

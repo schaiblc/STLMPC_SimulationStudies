@@ -2602,8 +2602,8 @@ class GapBarrier
 			
 
 				nlopt_set_min_objective(opt, myfunc, &track_line);
-				std::vector<double> tol(nMPC*kMPC-1, 1e-8);
-				std::vector<double> tol1(2*nMPC*kMPC, 1e-8);
+				std::vector<double> tol(nMPC*kMPC-1, 1e-4);
+				std::vector<double> tol1(2*nMPC*kMPC, 1e-4);
 				
 				
 				double opt_params[4]={vel_adapt*std::max(default_dt,dt),wheelbase,std::abs(max_servo_speed*std::max(default_dt,dt)),last_delta};

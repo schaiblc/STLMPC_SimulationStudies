@@ -3017,8 +3017,8 @@ class GapBarrier
 
 
 				nlopt_set_min_objective(opt, myfunc, opt_params1.data());
-				std::vector<double> tol(9*bez_curv_pts, 1e-8);
-				std::vector<double> tolp(1, 1e-8);
+				std::vector<double> tol(9*bez_curv_pts, 1e-4);
+				std::vector<double> tolp(1, 1e-4);
 
 				nlopt_add_inequality_mconstraint(opt, 9*bez_curv_pts, bezier_inequality_con, opt_params2.data(), tol.data());
 				if(leader_detect==1){

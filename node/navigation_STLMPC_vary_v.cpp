@@ -79,8 +79,8 @@ int en_gvobs=1;   // obstacle-proximity velocity limit g_vobs (Eq. 5.3.13)
 // penalties). Comparing it to SLSQP on the same problem isolates the solver choice
 // and probes the local-optima concern. Defaults off; set from rosparams.
 int use_mppi=0;        // 1 => replace SLSQP with MPPI on the same formulation
-int mppi_K=512;        // rollout samples per iteration
-int mppi_iters=16;      // MPPI update iterations per control step
+int mppi_K=256;        // rollout samples per iteration
+int mppi_iters=8;      // MPPI update iterations per control step
 double mppi_lambda=1.0;    // temperature
 double mppi_sd_delta=0.10; // steering sampling std (rad)
 double mppi_sd_v=0.30;     // velocity sampling std (m/s)
@@ -812,8 +812,8 @@ class GapBarrier
 			nf.param("hard_clamp_v",   hard_clamp_v, 0); // B2 V4: 1 => hard post-hoc clamp
 			if(hard_clamp_v){ en_gvsteer=0; en_gvobs=0; } // V4 disables both in-solver soft limits
 			nf.param("use_mppi",   use_mppi, 0);          // B4: MPPI baseline on the same formulation
-			nf.param("mppi_K",     mppi_K, 512);
-			nf.param("mppi_iters", mppi_iters, 16);
+			nf.param("mppi_K",     mppi_K, 256);
+			nf.param("mppi_iters", mppi_iters, 8);
 			nf.param("mppi_lambda", mppi_lambda, 1.0);
 			nf.param("mppi_sd_delta", mppi_sd_delta, 0.10);
 			nf.param("mppi_sd_v", mppi_sd_v, 0.30);

@@ -18,10 +18,14 @@ finish    : per-map goal (goal_x/goal_y/goal_radius) read from config/map_starts
 completed : reaching the finish region -- AFTER first leaving it by --arm-dist, so a
             lap whose finish == start is not "complete" at t=0 -- without collision.
             With no finish region, simply not colliding.
-collision : min over the run (up to completion) of d_min < --collision-radius (0.15 m).
+collision : first row whose d_min < --collision-radius (0.15 m). This is a terminal
+            event: metrics are evaluated only up to it, so a crashed run's post-impact
+            idle (car halted to run_timeout) never enters the averages. A finish
+            reached only AFTER a collision does not count as completion.
 t_course  : time at which the finish region is reached, reported for completed runs
-            only. Metrics are evaluated up to that instant, so post-finish coasting
-            or a second-lap crash does not pollute the reported course.
+            only. Metrics are evaluated up to the first terminal event (completion OR
+            collision), so post-finish coasting, a second-lap crash, or post-impact
+            idle does not pollute the reported course.
 success rate : fraction of a config's seeds that completed.
 
 Pure Python stdlib (csv, glob, statistics, argparse) so it runs anywhere.
@@ -33,8 +37,11 @@ FNAME_RE = re.compile(r"^(?P<config>.+)_map(?P<map>[^_]+)_seed(?P<seed>\d+)\.csv
 
 
 def load_rows(path):
+    # Tolerate a truncated / NUL-corrupted final line from a run killed mid-write:
+    # strip NULs and let a short last row fall out (col() ignores missing fields).
     with open(path, newline="") as f:
-        return [{k: v for k, v in r.items()} for r in csv.DictReader(f)]
+        data = f.read().replace("\x00", "")
+    return [{k: v for k, v in r.items()} for r in csv.DictReader(data.splitlines())]
 
 
 def col(rows, name):
@@ -84,13 +91,34 @@ def summarize_run(path, collision_radius, finish, arm_dist):
     if not rows:
         return None
 
+    # collision: first row whose d_min falls below the collision radius. This is the
+    # terminal event for a crashed run; metrics are evaluated only up to it (mirroring
+    # the completion truncation below). Without this cap a run's post-impact idle
+    # (car halted at v~0 with frozen geometry, right up to run_timeout) would be
+    # folded into mean_v / mean_dmin / var_delta -- and by an amount that depends on
+    # WHEN it crashed, which varies per config/seed. Truncating scores every config
+    # over the same phase of motion (approach up to first sub-radius contact), so the
+    # averages are consistent regardless of whether the simulator halts on collision.
+    coll_idx = None
+    for i, r in enumerate(rows):
+        try:
+            if float(r["d_min"]) < collision_radius:
+                coll_idx = i
+                break
+        except (KeyError, ValueError):
+            continue
+
     # completion: first row within the finish region AFTER first leaving it by
-    # arm_dist, so a lap whose finish == start is not "complete" at t=0.
+    # arm_dist, so a lap whose finish == start is not "complete" at t=0. A finish
+    # reached only AFTER a collision does not count -- the crash terminates the run
+    # first -- so the scan stops at the collision instant.
     reached, comp_idx = False, len(rows) - 1
     if finish is not None:
         fx, fy, fr = finish
         armed = False
         for i, r in enumerate(rows):
+            if coll_idx is not None and i > coll_idx:
+                break
             try:
                 d = math.hypot(float(r["x"]) - fx, float(r["y"]) - fy)
             except (KeyError, ValueError):
@@ -101,9 +129,11 @@ def summarize_run(path, collision_radius, finish, arm_dist):
                 reached, comp_idx = True, i
                 break
 
-    # Evaluate metrics only up to completion, so post-finish coasting or a crash on
-    # a second lap does not pollute the reported course.
-    rows = rows[:comp_idx + 1]
+    # Evaluate metrics only up to whichever terminal event comes first -- completion
+    # or collision -- so post-finish coasting, a crash on a second lap, or post-impact
+    # idle does not pollute the reported course.
+    end_idx = comp_idx if coll_idx is None else min(comp_idx, coll_idx)
+    rows = rows[:end_idx + 1]
 
     dmin = col(rows, "d_min")
     v = col(rows, "v_cmd")

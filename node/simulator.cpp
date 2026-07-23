@@ -219,7 +219,11 @@ public:
         n = ros::NodeHandle("~");
 
         move_base_client = new actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction>("move_base", true);
-        move_base_client->waitForServer(ros::Duration(5.0));
+        // Only the ROS-stack baselines (experiment.launch) use move_base; the STLMPC
+        // campaign does not, so campaign.launch sets move_base_wait:=0.1 to avoid
+        // blocking ~5 s per run on a server that never comes up.
+        double move_base_wait; n.param("move_base_wait", move_base_wait, 5.0);
+        move_base_client->waitForServer(ros::Duration(move_base_wait));
 
         // Initialize car state and driving commands
         // state = {.x=0, .y=0, .theta=0, .velocity=0, .steer_angle=0.0, .angular_velocity=0.0, .slip_angle=0.0, .st_dyn=false};
@@ -677,7 +681,11 @@ public:
             }
         }
 
-        pub_pose_det_transform(timestamp);
+        // Only broadcast the detected-vehicle frame when an adversary is enabled, so
+        // non-dynamic runs (adv_enable=0) have no tracked vehicle at all: the planner
+        // never sees a det_racecar frame, so det_active=0 and no spurious minTTC is
+        // logged. (The legacy phantom above is left intact but simply not published.)
+        if(adv_enable) pub_pose_det_transform(timestamp);
 
         // Revision: course-completion / timeout check (see check_completion).
         check_completion();
@@ -1324,18 +1332,22 @@ public:
             ts_wheel.child_frame_id = "front_right_wheel";
             br.sendTransform(ts_wheel);
 
-            quat_wheel.setEuler(0., 0., 0);
-            ts_wheel.transform.rotation.x = 0;
-            ts_wheel.transform.rotation.y = 0;
-            ts_wheel.transform.rotation.z = 0;
-            ts_wheel.transform.rotation.w = 1;
-            ts_wheel.header.stamp = timestamp;
-            ts_wheel.header.frame_id = "det_racecar_front_left_hinge";
-            ts_wheel.child_frame_id = "det_racecar_front_left_wheel";
-            br.sendTransform(ts_wheel);
-            ts_wheel.header.frame_id = "det_racecar_front_right_hinge";
-            ts_wheel.child_frame_id = "det_racecar_front_right_wheel";
-            br.sendTransform(ts_wheel);
+            // Detected-vehicle wheels only when an adversary is enabled (its base
+            // frame is only broadcast then), avoiding orphan-frame tf warnings.
+            if(adv_enable){
+                quat_wheel.setEuler(0., 0., 0);
+                ts_wheel.transform.rotation.x = 0;
+                ts_wheel.transform.rotation.y = 0;
+                ts_wheel.transform.rotation.z = 0;
+                ts_wheel.transform.rotation.w = 1;
+                ts_wheel.header.stamp = timestamp;
+                ts_wheel.header.frame_id = "det_racecar_front_left_hinge";
+                ts_wheel.child_frame_id = "det_racecar_front_left_wheel";
+                br.sendTransform(ts_wheel);
+                ts_wheel.header.frame_id = "det_racecar_front_right_hinge";
+                ts_wheel.child_frame_id = "det_racecar_front_right_wheel";
+                br.sendTransform(ts_wheel);
+            }
 
 
         }

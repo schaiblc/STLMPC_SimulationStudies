@@ -20,7 +20,28 @@ PKG=f1tenth_simulator
 OUT=${OUT:-$HOME/stlmpc_logs}          # where CSVs are written
 SEEDS=${SEEDS:-10}                      # seeds per configuration
 RUN_SECONDS=${RUN_SECONDS:-60}          # per-run timeout: failure if goal not reached by then
+# RESUME=1 skips seeds already finished (>= MIN_ROWS rows) so a crashed/OOM'd sweep
+# can be re-run without redoing completed work. Runs are strictly sequential (one at
+# a time) -- do not parallelize on a memory-constrained VM.
+RESUME=${RESUME:-0}
+MIN_ROWS=${MIN_ROWS:-50}
 mkdir -p "$OUT"
+
+# Because each run is launched with setsid (its own process group), a Ctrl-C on this
+# script would NOT reach the running roslaunch -- it would keep spinning as an orphan
+# at ~100% CPU. This trap force-kills the in-flight run's whole group on interrupt.
+CUR=""   # process-group id (== leader pid) of the in-flight run
+cleanup() {
+  trap - INT TERM
+  if [ -n "$CUR" ]; then
+    echo "" >&2; echo "Interrupted -- stopping current run ($CUR)..." >&2
+    kill -INT  -"$CUR" 2>/dev/null
+    timeout 5 bash -c "while kill -0 -\"$CUR\" 2>/dev/null; do sleep 0.5; done"
+    kill -KILL -"$CUR" 2>/dev/null
+  fi
+  exit 130
+}
+trap cleanup INT TERM
 
 # SIMULATION maps only (map1..map5), selected by basename via the map_name arg.
 # The per-map ego/adversary/goal start poses now live in config/map_starts.yaml
@@ -46,6 +67,19 @@ run_one() {
   for ((sd=0; sd<SEEDS; sd++)); do
     local seed=$(printf "%02d" "$sd")
     local log="$OUT/${cfg}_${mapk}_seed${seed}.csv"
+
+    # Resume: skip a seed already run to completion (>= MIN_ROWS logged rows), so a
+    # crash/OOM part-way through the sweep is recovered by simply re-running the same
+    # command -- finished runs are kept, only empty/partial ones are redone.
+    #   RESUME=1 SEEDS=10 ONLY="B3" bash scripts/run_campaign.sh
+    if [ "${RESUME:-0}" = 1 ] && [ -f "$log" ]; then
+      local have; have=$(wc -l < "$log" 2>/dev/null || echo 0)
+      if [ "${have:-0}" -ge "${MIN_ROWS:-50}" ]; then
+        echo "--- skip (done, $have rows): ${cfg}_${mapk}_seed${seed}"
+        continue
+      fi
+    fi
+
     local dx dy dt
     dx=$(awk -v j="$(jit "$sd" 1)" 'BEGIN{print 0.3*j}')
     dy=$(awk -v j="$(jit "$sd" 2)" 'BEGIN{print 0.3*j}')
@@ -56,7 +90,12 @@ run_one() {
     # seed offset is passed as ego_jitter_*. auto_nav starts navigation hands-free,
     # and shutdown_on_goal ends the launch on completion or after run_timeout, so no
     # /initialpose or /key publishing is needed and completed runs stop immediately.
-    roslaunch $PKG campaign.launch \
+    # setsid => the launch is its own process group, so we can hard-kill every node
+    # at once if one hangs. --sigint/--sigterm-timeout cap how long roslaunch waits
+    # for a busy node (e.g. the solver mid-optimize) before escalating to SIGKILL,
+    # which avoids the multi-second CPU spike on a slow shutdown.
+    setsid roslaunch $PKG campaign.launch \
+        --sigint-timeout=3 --sigterm-timeout=3 \
         map_name:="$mapk" planner:="$planner" \
         log_file:="$log" enable_logging:=1 \
         auto_nav:=1 auto_nav_delay:=3.0 \
@@ -65,17 +104,45 @@ run_one() {
         $extra \
         >/dev/null 2>&1 &
     local lpid=$!
+    CUR=$lpid   # expose to the SIGINT trap so Ctrl-C tears this run down
 
-    # Wait for the launch to self-terminate (goal reached or run_timeout), with an
-    # outer safety kill in case a node hangs.
+    # Normally the simulator ends the launch itself on goal/run_timeout. If that
+    # doesn't happen within a grace window, force-kill the whole process group.
     local waited=0 cap
-    cap=$(awk -v r="$RUN_SECONDS" 'BEGIN{printf "%d", r+20}')
+    cap=$(awk -v r="$RUN_SECONDS" 'BEGIN{printf "%d", r+25}')
     while kill -0 $lpid 2>/dev/null; do
       sleep 1; waited=$((waited+1))
-      [ "$waited" -ge "$cap" ] && { kill -INT $lpid 2>/dev/null; break; }
+      if [ "$waited" -ge "$cap" ]; then
+        echo "!!! run exceeded cap, killing $lpid" >&2
+        kill -INT  -"$lpid" 2>/dev/null
+        sleep 4
+        kill -KILL -"$lpid" 2>/dev/null
+        break
+      fi
     done
+
+    # --- Staggered, bounded teardown (replaces the plain `wait $lpid`) ---
+    # Kill the heaviest node first and give it a short window, THEN take down
+    # the rest of the group. Every step has a hard timeout so this function
+    # can NEVER block indefinitely, regardless of what the nodes do.
+    rosnode kill /navigation_STLMPC >/dev/null 2>&1
+    timeout 5 bash -c "while kill -0 -\"$lpid\" 2>/dev/null; do sleep 0.5; done"
+
+    # Whatever's left in the group (if anything) gets SIGINT, bounded to 5s.
+    kill -0 -"$lpid" 2>/dev/null && kill -INT -"$lpid" 2>/dev/null
+    timeout 5 bash -c "while kill -0 -\"$lpid\" 2>/dev/null; do sleep 0.5; done"
+
+    # Anything STILL alive after both windows gets force-killed, no exceptions.
+    if kill -0 -"$lpid" 2>/dev/null; then
+      echo "!!! group $lpid would not die, SIGKILL" >&2
+      kill -KILL -"$lpid" 2>/dev/null
+      sleep 1
+    fi
+
+    # Don't call plain `wait` here -- it can block on a detached setsid group.
     wait $lpid 2>/dev/null
-    sleep 2
+    CUR=""
+    sleep 1
   done
 }
 

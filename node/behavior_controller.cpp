@@ -87,8 +87,9 @@ private:
     double beginning_seconds;
     int collision_count=0;
 
-    // Revision: deterministic hands-free nav start (batch/reproducible runs)
-    bool auto_nav=false;
+    // Revision: deterministic hands-free nav start (batch/reproducible runs).
+    // int (not bool) so roslaunch's value="1"/"0" reads back correctly.
+    int auto_nav=0;
     double auto_nav_delay=3.0;
     bool auto_nav_done=false;
     ros::Timer auto_nav_timer;
@@ -188,7 +189,7 @@ public:
         // Revision: optionally auto-enable navigation after a fixed delay so batch
         // runs do not depend on a hand-typed "n". Combined with the simulator's
         // nav-anchored adversary clock, this makes dynamic runs fully reproducible.
-        n.param("auto_nav", auto_nav, false);
+        n.param("auto_nav", auto_nav, 0);
         n.param("auto_nav_delay", auto_nav_delay, 3.0);
         if (auto_nav) {
             auto_nav_timer = n.createTimer(ros::Duration(auto_nav_delay),

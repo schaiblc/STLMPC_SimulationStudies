@@ -27,8 +27,14 @@
   <arg name="enable_gvobs"   default="1"/>
   <arg name="hard_clamp_v"   default="0"/>
 
-  <!-- B4: MPPI baseline (vary_v only) -->
+  <!-- B4: MPPI baseline (vary_v only). Defaults match params.yaml; override to sweep.
+       n_evals per control step = mppi_K * mppi_iters. -->
   <arg name="use_mppi"       default="0"/>
+  <arg name="mppi_K"         default="256"/>
+  <arg name="mppi_iters"     default="8"/>
+  <arg name="mppi_lambda"    default="1.0"/>
+  <arg name="mppi_sd_delta"  default="0.10"/>
+  <arg name="mppi_sd_v"      default="0.30"/>
 
   <!-- B3: swept parameters (leave at nominal unless swept) -->
   <arg name="d_dot_factor_STLMPC_vary_v" default="30"/>
@@ -91,6 +97,7 @@
     <rosparam command="load" file="$(find f1tenth_simulator)/params.yaml"/>
     <rosparam command="load" file="$(find f1tenth_simulator)/config/map_starts.yaml"/>
     <param name="map_name"          value="$(arg map_name)"/>
+    <param name="move_base_wait"    value="0.1"/>
     <param name="adv_enable"        value="$(arg adv_enable)"/>
     <param name="adv_maneuver"      value="$(arg adv_maneuver)"/>
     <param name="adv2_enable"       value="$(arg adv2_enable)"/>
@@ -131,6 +138,11 @@
     <param name="enable_gvobs"      value="$(arg enable_gvobs)"/>
     <param name="hard_clamp_v"      value="$(arg hard_clamp_v)"/>
     <param name="use_mppi"          value="$(arg use_mppi)"/>
+    <param name="mppi_K"            value="$(arg mppi_K)"/>
+    <param name="mppi_iters"        value="$(arg mppi_iters)"/>
+    <param name="mppi_lambda"       value="$(arg mppi_lambda)"/>
+    <param name="mppi_sd_delta"     value="$(arg mppi_sd_delta)"/>
+    <param name="mppi_sd_v"         value="$(arg mppi_sd_v)"/>
     <param name="d_dot_factor_STLMPC_vary_v" value="$(arg d_dot_factor_STLMPC_vary_v)"/>
     <param name="vel_factor_STLMPC_vary_v"   value="$(arg vel_factor_STLMPC_vary_v)"/>
     <param name="safe_distance"     value="$(arg safe_distance)"/>

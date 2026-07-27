@@ -253,6 +253,10 @@ vel_beta: 10
 heading_beam_angle: rad(pi/8)
 stop_distance: 0.8 #m
 stop_distance_decay: 0.5 #m
+# Hysteresis for releasing the supervisory stop: the vehicle resumes once the forward
+# clearance exceeds stop_distance+stop_release_margin, so it can recover from a halt
+# instead of latching until restart.
+stop_release_margin: 0.1 #m
 
 #STLMPC Optimization Base Weights
 d_factor_STLMPC: 1

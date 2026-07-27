@@ -484,7 +484,7 @@ The global planner then plots a path to the time-varying goal while the local pl
 \scriptsize $v_\textup{min}$, $v_\textup{max}$ & \scriptsize Velocity bounds (m/s) & \scriptsize --- & \scriptsize 0, 3 \\
 \scriptsize $a_\textup{max}$ & \scriptsize Max. acceleration (m/$\textup{s}^2$) & \scriptsize --- & \scriptsize 2.5 \\
 \scriptsize $v_\textup{floor}$ & \scriptsize Initial velocity floor (m/s) & \scriptsize --- & \scriptsize 0.1 \\
-\scriptsize $d_\textup{safe}$ & \scriptsize Gap hazard threshold (m) & \scriptsize 2 & \scriptsize 1.25 \\
+\scriptsize $d_\textup{safe}^{\,\dagger}$ & \scriptsize Gap hazard threshold (m) & \scriptsize 2 & \scriptsize 1.25 \\
 \scriptsize $a_l\!=\!a_r$, $b_l\!=\!b_r$ & \scriptsize Cluster offsets (rad) & \scriptsize $\frac{\pi}{9}$, $\frac{\pi}{2}$ & \scriptsize $\frac{\pi}{9}$, $\frac{\pi}{2}$ \\[0.2em]
 \scriptsize $\epsilon$, $\epsilon_b$ & \scriptsize QP bound margin, norm. clamp & \scriptsize 0.1, $10^{-3}$ & \scriptsize 0.1, $10^{-3}$ \\
 \scriptsize $\lambda_{d^2}$, $\lambda_{\dot d^2}$, $\lambda_{\delta^2}$ & \scriptsize Objective base weights & \scriptsize 1, 30, 1 & \scriptsize 1, 30, 1 \\
@@ -492,11 +492,12 @@ The global planner then plots a path to the time-varying goal while the local pl
 \scriptsize $\theta_{\text{band}_{\textup{max}}}$ & \scriptsize Passband half-width (rad) & \scriptsize --- & \scriptsize $\frac{\pi}{8}$ \\[0.2em]
 \scriptsize $s_{\theta}$ & \scriptsize Passband steepness ($\textup{rad}^{-1}$) & \scriptsize --- & \scriptsize 200 \\
 \scriptsize $\beta_v$ & \scriptsize Softmin sharpness ($\textup{m}^{-1}$) & \scriptsize --- & \scriptsize 10 \\
-\scriptsize $d_\textup{stop}$ & \scriptsize Supervisory stopping distance (m) & \scriptsize --- & \scriptsize 0.5 \\
+\scriptsize $d_\textup{stop}^{\,\dagger}$ & \scriptsize Supervisory stopping distance (m) & \scriptsize --- & \scriptsize 0.5 \\
 \scriptsize $\alpha_v$ & \scriptsize Velocity limit decay rate (m) & \scriptsize --- & \scriptsize 0.5 \\
 \scriptsize $d_\textup{sep}$ & \scriptsize Obstacle subsampling spacing (m) & \scriptsize --- & \scriptsize 0.2 \\
 \scriptsize $\text{l}_\text{v}$, $\text{w}_\text{v}$ & \scriptsize Detected vehicle length, width (m) & \scriptsize 0.5, 0.4 & \scriptsize --- \\
-\bottomrule
+\bottomrule\\[-0.85em]
+\multicolumn{4}{@{}p{0.97\columnwidth}@{}}{\scriptsize $^\dagger$ The values listed are those of the physical courses. The simulation studies of Section \ref{sec:simstudies} run on the larger simulator maps and use the correspondingly larger $d_\textup{safe}=2$~m and $d_\textup{stop}=0.8$~m; all other values are unchanged.}
 \end{tabular}
 \end{table}
 

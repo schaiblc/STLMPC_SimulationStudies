@@ -17,7 +17,7 @@ import argparse, glob, math, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aggregate_runs import (FNAME_RE, load_rows, parse_map_starts,
-                            finish_for_map, summarize_run)
+                            finish_for_map, summarize_run, warn_arm_dist)
 
 
 def main():
@@ -26,7 +26,8 @@ def main():
     ap.add_argument("path", nargs="?", default=os.path.expanduser("~/stlmpc_logs"),
                     help="log directory or a single CSV (default ~/stlmpc_logs)")
     ap.add_argument("--collision-radius", type=float, default=0.15)
-    ap.add_argument("--arm-dist", type=float, default=2.0)
+    ap.add_argument("--arm-dist", type=float, default=5.0,
+                    help="must match goal_arm_dist in campaign.launch (default 5.0)")
     ap.add_argument("--finish-radius", type=float, default=1.0)
     ap.add_argument("--map-starts",
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -36,6 +37,7 @@ def main():
     files = (sorted(glob.glob(os.path.join(args.path, "*.csv")))
              if os.path.isdir(args.path) else [args.path])
     goals = parse_map_starts(args.map_starts)
+    warn_arm_dist(goals, args.arm_dist, args.finish_radius)
     n = {"PASS": 0, "COLLISION": 0, "INCOMPLETE": 0, "EMPTY": 0}
 
     for f in files:

@@ -22,6 +22,13 @@
   <arg name="nMPC"           default="2"/>
   <arg name="kMPC"           default="8"/>
 
+  <!-- B1b: horizon *distance*. At the nominal v=1.5 m/s a 1.6 s horizon spans only
+       2.4 m, short enough that one tracking line covers it about as well as two. The
+       B1b study grows the horizon distance either by lengthening the horizon
+       (nMPC*kMPC=32) or by raising the constant speed (vehicle_velocity), so the
+       switchback bend falls inside the horizon. Constant-v planner only. -->
+  <arg name="vehicle_velocity" default="1.5"/>
+
   <!-- B2: velocity-constraint ablation (vary_v only) -->
   <arg name="enable_gvsteer" default="1"/>
   <arg name="enable_gvobs"   default="1"/>
@@ -134,6 +141,7 @@
     <param name="use_neural_net"    value="$(arg use_neural_net)"/>
     <param name="nMPC"              value="$(arg nMPC)"/>
     <param name="kMPC"              value="$(arg kMPC)"/>
+    <param name="vehicle_velocity"  value="$(arg vehicle_velocity)"/>
     <param name="enable_gvsteer"    value="$(arg enable_gvsteer)"/>
     <param name="enable_gvobs"      value="$(arg enable_gvobs)"/>
     <param name="hard_clamp_v"      value="$(arg hard_clamp_v)"/>

@@ -125,7 +125,10 @@ run_one() {
     # Kill the heaviest node first and give it a short window, THEN take down
     # the rest of the group. Every step has a hard timeout so this function
     # can NEVER block indefinitely, regardless of what the nodes do.
-    rosnode kill /navigation_STLMPC >/dev/null 2>&1
+    # Kill the run's ACTUAL planner (the node is named after $planner), not a
+    # hardcoded /navigation_STLMPC -- that was a no-op for the vary_v/FGM/MPPI runs,
+    # leaving the heaviest node alive for the whole staggered teardown below.
+    rosnode kill "/$planner" >/dev/null 2>&1
     timeout 5 bash -c "while kill -0 -\"$lpid\" 2>/dev/null; do sleep 0.5; done"
 
     # Whatever's left in the group (if anything) gets SIGINT, bounded to 5s.
@@ -163,6 +166,25 @@ for mk in map4 map1; do
   run_one "B1-A3-$mk" $mk navigation_STLMPC "nMPC:=4 kMPC:=4"
 done
 
+# B1b -- the same sequential-line ablation at a LONGER HORIZON DISTANCE. B1 runs a
+# 1.6 s horizon at v=1.5 m/s, i.e. only 2.4 m of travel, over which a single tracking
+# line covers the corridor about as well as two (A1 and A2 come out statistically
+# indistinguishable). B1b grows the horizon distance two ways, so the switchback bend
+# falls inside the horizon and the sequential structure has something to exploit:
+#   -H  lengthen the horizon: nMPC*kMPC = 32 (3.2 s = 4.8 m), problem size doubles
+#   -V  raise the speed:      v = 2.5 m/s (1.6 s = 4.0 m), problem size UNCHANGED,
+#       so -V isolates horizon distance with no solver-cost confound.
+# Smoke-test both at SEEDS=1 first: -H may push solve time into the 50 ms cap, and -V
+# may be infeasible for the constant-v planner on the switchback (it cannot slow down).
+for mk in map4; do
+  run_one "B1b-H-A1-$mk" $mk navigation_STLMPC "nMPC:=1 kMPC:=32"
+  run_one "B1b-H-A2-$mk" $mk navigation_STLMPC "nMPC:=2 kMPC:=16"
+  run_one "B1b-H-A3-$mk" $mk navigation_STLMPC "nMPC:=4 kMPC:=8"
+  run_one "B1b-V-A1-$mk" $mk navigation_STLMPC "nMPC:=1 kMPC:=16 vehicle_velocity:=2.5"
+  run_one "B1b-V-A2-$mk" $mk navigation_STLMPC "nMPC:=2 kMPC:=8  vehicle_velocity:=2.5"
+  run_one "B1b-V-A3-$mk" $mk navigation_STLMPC "nMPC:=4 kMPC:=4  vehicle_velocity:=2.5"
+done
+
 # B2 -- velocity-constraint ablation, switchback map (map4), variable-velocity node
 run_one B2-V1 map4 navigation_STLMPC_vary_v "enable_gvsteer:=1 enable_gvobs:=1 hard_clamp_v:=0"
 run_one B2-V2 map4 navigation_STLMPC_vary_v "enable_gvsteer:=0 enable_gvobs:=1 hard_clamp_v:=0"
@@ -180,9 +202,12 @@ for v in 67 115 200 350 600;  do run_one "B3-s_theta-$v"   map4 navigation_STLMP
 
 # B4 -- baselines. FGM (gap heuristic) spread across layouts (static, open, switchback);
 # MPPI (sampling optimizer on the SAME STLMPC objective+constraints) vs SQP on map4.
-run_one B4-FGM  map1 navigation_FGM ""
-run_one B4-FGM  map2 navigation_FGM ""
-run_one B4-FGM  map4 navigation_FGM ""
+# The config token must carry the map for any study that spans several maps (as B1
+# does): aggregate_runs.py groups by config alone, so a shared "B4-FGM" token would
+# average the three layouts into one meaningless row.
+run_one B4-FGM-map1 map1 navigation_FGM ""
+run_one B4-FGM-map2 map2 navigation_FGM ""
+run_one B4-FGM-map4 map4 navigation_FGM ""
 run_one B4-MPPI map4 navigation_STLMPC_vary_v "use_mppi:=1"
 run_one B4-SQP  map4 navigation_STLMPC_vary_v "use_mppi:=0"   # matched SQP reference
 

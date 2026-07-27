@@ -576,6 +576,11 @@ class GapBarrier
 		double vel;
 		double CenterOffset, wheelbase;
 		double stop_distance, stop_distance_decay;
+		// Revision (R1.3): hysteresis band for releasing the supervisory stop. The stop
+		// engages at stop_distance and releases only once the forward clearance exceeds
+		// stop_distance+stop_release_margin, so a reading hovering at the threshold
+		// cannot chatter the vehicle between stopped and moving.
+		double stop_release_margin;
 		double k_p, k_d;
 		double max_steering_angle;
 		double vehicle_velocity; double velocity_zero;
@@ -772,6 +777,7 @@ class GapBarrier
 			nf.getParam("wheelbase", wheelbase);
 			nf.getParam("stop_distance", stop_distance);
 			nf.getParam("stop_distance_decay", stop_distance_decay);
+			nf.param("stop_release_margin", stop_release_margin, 0.1);
 			nf.getParam("k_p", k_p);
 			nf.getParam("k_d", k_d);
 			nf.getParam("max_steering_angle", max_steering_angle);
@@ -2358,11 +2364,35 @@ class GapBarrier
 			timestamp_tf2=timestamp_tf1; timestamp_cam2=timestamp_cam1;
 			visualize_detections(); //PLot the detections in rviz regardless of if we are in autonomous mode or not
 
+			// Revision (R1.3): release the supervisory stop once the path ahead re-opens.
+			// The stop engages below when min_distance<stop_distance and sets `stopped`;
+			// previously that flag never cleared, so the early return here was permanent
+			// and the vehicle could not leave a confined space without a restart. That
+			// contradicted the near-stop recovery the manuscript describes, so the
+			// forward clearance is re-measured from the current scan every cycle and the
+			// stop is released with hysteresis. The MPC then restarts from v_0=vel_adapt,
+			// which is already floored at v_floor, so the 1/v^2 objective stays finite.
+			if(stopped==1){
+				double fwd_clear = max_lidar_range + 100;
+				for(int i=0; i<int(data->ranges.size()); ++i){
+					double ang = data->angle_min + i*data->angle_increment;
+					if(std::abs(ang) < heading_beam_angle){
+						double r = data->ranges[i];
+						if(std::isfinite(r) && r < fwd_clear) fwd_clear = r;
+					}
+				}
+				if(fwd_clear > stop_distance + stop_release_margin){
+					stopped=0; stopped_msg=0;
+					ROS_INFO("Path ahead cleared (%.2f m > %.2f m): resuming navigation.",
+					         fwd_clear, stop_distance+stop_release_margin);
+				}
+			}
+
 			if (!nav_active ||(use_map && !map_saved)||stopped)  { //Don't start navigation until map is saved if that's what we're using
 				drive_state = "normal";
 				if(stopped==1 && stopped_msg==0){
 					stopped_msg=1;
-					ROS_ERROR("Vehicle stopped since too close to obstacles. Restart to move again\n");
+					ROS_WARN("Vehicle stopped: too close to obstacles. Holding until the path ahead clears.\n");
 				}
 				return;
 			}

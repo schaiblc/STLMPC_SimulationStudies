@@ -86,6 +86,28 @@ def finish_for_map(map_token, map_goals, default_radius):
     return (blk["goal_x"], blk["goal_y"], blk.get("goal_radius", default_radius))
 
 
+def warn_arm_dist(map_goals, arm_dist, default_radius):
+    """Flag maps whose goal_radius >= arm_dist, which makes completion meaningless.
+
+    Arming requires the ego to get arm_dist from the goal; completion requires it to
+    come back within goal_radius. If goal_radius >= arm_dist the two regions overlap,
+    so a lap "completes" within a second or two of the start without the ego ever
+    driving the course -- silently turning every run into a PASS at t~0.
+    """
+    bad = []
+    for name, blk in sorted(map_goals.items()):
+        if "goal_x" not in blk or "goal_y" not in blk:
+            continue
+        r = blk.get("goal_radius", default_radius)
+        if r >= arm_dist:
+            bad.append((name, r))
+    for name, r in bad:
+        print("  WARNING: %s goal_radius=%.2f >= --arm-dist %.2f -- completion is "
+              "trivially satisfied; raise arm-dist (and goal_arm_dist) or shrink the "
+              "goal radius." % (name, r, arm_dist))
+    return bad
+
+
 def summarize_run(path, collision_radius, finish, arm_dist):
     rows = load_rows(path)
     if not rows:
@@ -200,9 +222,11 @@ def main():
     ap.add_argument("--finish-x", type=float)
     ap.add_argument("--finish-y", type=float)
     ap.add_argument("--finish-radius", type=float, default=1.0)
-    ap.add_argument("--arm-dist", type=float, default=2.0,
+    ap.add_argument("--arm-dist", type=float, default=5.0,
                     help="ego must leave the finish region by this much before a "
-                         "return counts as completion (matches goal_arm_dist)")
+                         "return counts as completion. MUST match goal_arm_dist in "
+                         "campaign.launch (default 5.0) or offline completion will "
+                         "disagree with the simulator's online verdict")
     ap.add_argument("--map-starts",
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "..", "config", "map_starts.yaml"),
@@ -218,6 +242,7 @@ def main():
     if args.finish_x is not None and args.finish_y is not None:
         global_finish = (args.finish_x, args.finish_y, args.finish_radius)
     map_goals = parse_map_starts(args.map_starts)
+    warn_arm_dist(map_goals, args.arm_dist, args.finish_radius)
 
     runs = {}  # config -> list of per-run dicts
     for path in sorted(glob.glob(os.path.join(args.log_dir, "*.csv"))):
@@ -237,17 +262,22 @@ def main():
 
     with open(args.out, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["config", "n_seeds", "success_rate"] +
+        w.writerow(["config", "n_seeds", "success_rate", "collision_free_rate"] +
                    [x + "_mean" for x in metrics] + [x + "_std" for x in metrics])
         for cfg in sorted(runs):
             rs = runs[cfg]
             n = len(rs)
             succ = statistics.fmean([r["completed"] for r in rs]) if rs else 0.0
+            # Collision-free rate is reported alongside the success rate because the two
+            # differ for a GOAL-FREE planner: on a forked layout nothing biases STLMPC
+            # toward the branch holding the finish point, so a run can be entirely safe
+            # yet never "complete". Safety and goal-reaching are separate claims.
+            cfree = statistics.fmean([1.0 - r["collided"] for r in rs]) if rs else 0.0
             means, stds = [], []
             for mkey in metrics:
                 mu, sd = agg([r[mkey] for r in rs])
                 means.append(mu); stds.append(sd)
-            w.writerow([cfg, n, "%.3f" % succ] +
+            w.writerow([cfg, n, "%.3f" % succ, "%.3f" % cfree] +
                        ["%.4f" % x for x in means] + ["%.4f" % x for x in stds])
             if args.latex:
                 def cell(mkey, prec=3):

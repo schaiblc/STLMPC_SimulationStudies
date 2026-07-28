@@ -42,6 +42,14 @@
   <arg name="mppi_lambda"    default="1.0"/>
   <arg name="mppi_sd_delta"  default="0.10"/>
   <arg name="mppi_sd_v"      default="0.30"/>
+  <!-- mppi_warm: shift-and-repeat the previous step's nominal sequence. mppi_probe:
+       solve the identical problem with MPPI alongside SQP each step and log both
+       objectives (J_final, J_mppi) without applying the MPPI result. -->
+  <arg name="mppi_warm"      default="1"/>
+  <arg name="mppi_probe"     default="0"/>
+
+  <!-- NLopt constraint feasibility tolerance (all vectorized m-constraints). -->
+  <arg name="con_tol"        default="1e-4"/>
 
   <!-- B3: swept parameters (leave at nominal unless swept) -->
   <arg name="d_dot_factor_STLMPC_vary_v" default="30"/>
@@ -49,6 +57,10 @@
   <arg name="safe_distance"  default="2"/>
   <arg name="vel_beta"       default="10"/>
   <arg name="stop_distance_decay" default="0.5"/>
+  <!-- Supervisory stop distance. The sim maps use the larger 0.8 m default; the
+       reconstructed physical courses (experiment*) have ~0.9 m wide corridors and
+       must use the hardware value of 0.5 m or the stop fires continuously. -->
+  <arg name="stop_distance"  default="0.8"/>
   <arg name="theta_band_smooth"   default="200"/>
 
   <!-- B5: adversary + sensor degradation -->
@@ -151,11 +163,15 @@
     <param name="mppi_lambda"       value="$(arg mppi_lambda)"/>
     <param name="mppi_sd_delta"     value="$(arg mppi_sd_delta)"/>
     <param name="mppi_sd_v"         value="$(arg mppi_sd_v)"/>
+    <param name="mppi_warm"         value="$(arg mppi_warm)"/>
+    <param name="mppi_probe"        value="$(arg mppi_probe)"/>
+    <param name="con_tol"           value="$(arg con_tol)"/>
     <param name="d_dot_factor_STLMPC_vary_v" value="$(arg d_dot_factor_STLMPC_vary_v)"/>
     <param name="vel_factor_STLMPC_vary_v"   value="$(arg vel_factor_STLMPC_vary_v)"/>
     <param name="safe_distance"     value="$(arg safe_distance)"/>
     <param name="vel_beta"          value="$(arg vel_beta)"/>
     <param name="stop_distance_decay" value="$(arg stop_distance_decay)"/>
+    <param name="stop_distance"     value="$(arg stop_distance)"/>
     <param name="theta_band_smooth" value="$(arg theta_band_smooth)"/>
   </node>
 

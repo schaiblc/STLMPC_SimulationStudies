@@ -65,6 +65,11 @@ map_starts:
     goal_y: 0.0
     goal_radius: 1.5
 
+  # NOTE: the experiment*.yaml grids are the AMCL maps from the HARDWARE courses and
+  # are deliberately not listed here. The simulation studies use the dedicated
+  # simulation maps (map1..map5) only, so that simulated and physical results stay
+  # cleanly separated; the hardware courses are reported in Sections VI-C to VI-E.
+
   # TODO(capture): forked layout -- set ego + goal (finish end) from rviz.
   map5:
     ego_x:  0.0

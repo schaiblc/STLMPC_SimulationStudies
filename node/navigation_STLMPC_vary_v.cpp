@@ -57,6 +57,7 @@
 #include <nlopt.hpp>
 #include <Eigen/Dense>
 #include <random> //Revision: MPPI sampling baseline
+#include <limits> //Revision: quiet_NaN for the unused MPPI-probe column
 #include <f1tenth_simulator/run_logger.h> //Revision: per-step CSV telemetry for the simulation campaign
 
 //C++ will auto typedef float3 data type
@@ -81,9 +82,13 @@ int en_gvobs=1;   // obstacle-proximity velocity limit g_vobs (Eq. 5.3.13)
 int use_mppi=0;        // 1 => replace SLSQP with MPPI on the same formulation
 int mppi_K=256;        // rollout samples per iteration
 int mppi_iters=8;      // MPPI update iterations per control step
-double mppi_lambda=1.0;    // temperature
+double mppi_lambda=1.0;    // temperature; <=0 => adaptive (scaled to the cost spread)
 double mppi_sd_delta=0.10; // steering sampling std (rad)
 double mppi_sd_v=0.30;     // velocity sampling std (m/s)
+int    mppi_warm=1;        // 1 => warm-start the nominal sequence across control steps
+int    mppi_probe=0;       // 1 => also solve with MPPI each step and log both objectives
+double con_tol=1e-4;       // NLopt constraint feasibility tolerance (all m-constraints)
+std::vector<double> mppi_warm_d, mppi_warm_v;  // persisted nominal sequence
 
 
 struct float3
@@ -422,9 +427,24 @@ double mppi_optimize(double* x, void* obj_data,
     const int N = nMPC*kMPC;
     const double pen = 1e3;               // constraint-penalty weight
     std::vector<double> ud(N), uv(N);     // nominal control sequence
-    for(int i=0;i<N;i++){ ud[i]=x[N+i]; uv[i]=x[4*N+i]; }
+
+    // Revision: WARM START. MPPI is normally warm-started by shifting the previous
+    // step's nominal sequence forward one sample; re-seeding from the Algorithm-2
+    // guess every step (as this did originally) discards the sampling effort of all
+    // prior steps and materially understates the method. mppi_warm_d/v persist across
+    // control steps; on the first step, or if the horizon length changes, fall back to
+    // the analytic initial guess in x[].
+    if(mppi_warm && (int)mppi_warm_d.size()==N){
+        for(int i=0;i<N-1;i++){ ud[i]=mppi_warm_d[i+1]; uv[i]=mppi_warm_v[i+1]; }
+        ud[N-1]=mppi_warm_d[N-1]; uv[N-1]=mppi_warm_v[N-1];   // repeat last
+    } else {
+        for(int i=0;i<N;i++){ ud[i]=x[N+i]; uv[i]=x[4*N+i]; }
+    }
     ud[0]=last_delta_v; uv[0]=last_v;     // fixed first controls
-    std::mt19937 gen(1234567u);
+
+    // Revision: reseed per call. A fixed seed constructed inside this function meant
+    // every control step drew the identical noise, removing exploration diversity.
+    static std::mt19937 gen(1234567u);
     std::normal_distribution<double> nrm(0.0,1.0);
     std::vector<double> Xf(5*N);
     std::vector<double> resd(2*N,0.0), resv(4*N-2,0.0);
@@ -464,8 +484,25 @@ double mppi_optimize(double* x, void* obj_data,
             costs[k]=cost_of(d,v);
             if(costs[k]<cmin) cmin=costs[k];
         }
+        // Revision: ADAPTIVE TEMPERATURE. The weights are exp(-(J_k-J_min)/lambda), so
+        // lambda must be commensurate with the spread of J across samples. With the
+        // fixed lambda=1.0 and objective values of order 10-60 (plus penalties of order
+        // 1e3), the spread swamped the temperature and the softmax collapsed onto the
+        // single best sample -- degenerating MPPI into best-of-K random search. Scaling
+        // lambda to the observed spread keeps the weighting informative. Setting
+        // mppi_lambda>0 restores the fixed value for comparison.
+        double lam = mppi_lambda;
+        if(lam <= 0.0){
+            double mean=0.0;
+            for(int k=0;k<mppi_K;k++) mean += costs[k];
+            mean /= mppi_K;
+            double var=0.0;
+            for(int k=0;k<mppi_K;k++){ double e=costs[k]-mean; var += e*e; }
+            lam = std::sqrt(var/std::max(1,mppi_K-1));
+            if(!(lam>1e-9)) lam = 1e-9;
+        }
         double wsum=0;
-        for(int k=0;k<mppi_K;k++){ w[k]=exp(-(costs[k]-cmin)/mppi_lambda); wsum+=w[k]; }
+        for(int k=0;k<mppi_K;k++){ w[k]=exp(-(costs[k]-cmin)/lam); wsum+=w[k]; }
         if(wsum<=0) wsum=1;
         for(int i=1;i<N;i++){
             double dd=0, dv=0;
@@ -477,6 +514,7 @@ double mppi_optimize(double* x, void* obj_data,
     // write the optimized nominal (and its rolled-out states) back into x[].
     cost_of(ud,uv); // fills Xf with the final rolled-out trajectory
     for(int i=0;i<5*N;i++) x[i]=Xf[i];
+    mppi_warm_d = ud; mppi_warm_v = uv;   // persist for next step's warm start
     // return the objective part only (exclude penalties) for comparability with SLSQP.
     return myfunc(5*N, Xf.data(), NULL, obj_data);
 }
@@ -823,6 +861,14 @@ class GapBarrier
 			nf.param("mppi_lambda", mppi_lambda, 1.0);
 			nf.param("mppi_sd_delta", mppi_sd_delta, 0.10);
 			nf.param("mppi_sd_v", mppi_sd_v, 0.30);
+			nf.param("mppi_warm", mppi_warm, 1);
+			// B4: solve BOTH optimizers on the identical problem each control step and
+			// log both objectives, applying the SQP solution. This isolates solution
+			// quality on matched problem instances, which is the actual question behind
+			// the local-optimum critique -- unlike a closed-loop race, it cannot be
+			// confounded by warm-starting, tuning or control rate.
+			nf.param("mppi_probe", mppi_probe, 0);
+			nf.param("con_tol", con_tol, 1e-4);
 			nf.param("enable_logging", enable_logging, 0);
 			nf.param<std::string>("log_file", log_file, std::string(""));
 			run_logger.init(log_file, enable_logging!=0);
@@ -2386,6 +2432,32 @@ class GapBarrier
 					ROS_INFO("Path ahead cleared (%.2f m > %.2f m): resuming navigation.",
 					         fwd_clear, stop_distance+stop_release_margin);
 				}
+				else if(run_logger.enabled()){
+					// Revision: log the halted control steps too. The early return below skips
+					// the solver and its telemetry row, so without this a stalled run's CSV
+					// simply stops while the vehicle sits still for the rest of the episode.
+					// That silently truncated the metrics: mean_v and mean_dmin were averaged
+					// only over the moving portion, flattering exactly the configurations that
+					// get stuck. d_min/fwd_min are taken from the raw scan here (the subsampled
+					// obstacle set is not built on this path); solver fields are zero because
+					// no optimization runs while halted.
+					if(log_t0<0) log_t0=ros::Time::now().toSec();
+					double d_all = max_lidar_range + 100;
+					for(int i=0; i<int(data->ranges.size()); ++i){
+						double r = data->ranges[i];
+						if(std::isfinite(r) && r < d_all) d_all = r;
+					}
+					run_logger.row({
+						{"t", ros::Time::now().toSec()-log_t0},
+						{"x", simx}, {"y", simy}, {"theta", simtheta},
+						{"v_cmd", 0.0}, {"delta_cmd", 0.0},
+						{"d_min", d_all}, {"fwd_min", fwd_clear},
+						{"J_init", 0.0}, {"J_final", 0.0},
+						{"iters", 0.0}, {"solve_time", 0.0},
+						{"timeout", 0.0}, {"forcestop", 1.0},
+						{"success", 0.0}
+					});
+				}
 			}
 
 			if (!nav_active ||(use_map && !map_saved)||stopped)  { //Don't start navigation until map is saved if that's what we're using
@@ -2930,9 +3002,13 @@ class GapBarrier
 			
 
 				nlopt_set_min_objective(opt, myfunc, &track_line);
-				std::vector<double> tol(nMPC*kMPC-1, 1e-4);
-				std::vector<double> tol1(2*nMPC*kMPC, 1e-4);
-				std::vector<double> tol2(4*nMPC*kMPC-2, 1e-4);
+				// Constraint feasibility tolerances, exposed so the sensitivity of the
+				// solver to them can be tested (in particular whether the loss of
+				// convergence at large s_theta is a tolerance effect or a gradient
+				// conditioning one).
+				std::vector<double> tol(nMPC*kMPC-1, con_tol);
+				std::vector<double> tol1(2*nMPC*kMPC, con_tol);
+				std::vector<double> tol2(4*nMPC*kMPC-2, con_tol);
 				
 				
 				double opt_params[4]={std::max(default_dt,dt),wheelbase,std::abs(max_servo_speed*std::max(default_dt,dt)),last_delta};
@@ -3040,6 +3116,19 @@ class GapBarrier
 				// the solve (grad=NULL is safe as myfunc guards it). Substantiates the
 				// "effective initial guess" and convergence claims via J_init vs J_final.
 				double J_init=myfunc(5*nMPC*kMPC, x, NULL, &track_line);
+				// Revision (R2.2): PROBE MODE. Solve the identical problem instance with
+				// MPPI as well, from the same initial guess, and record its objective
+				// without applying it. A closed-loop race cannot separate solution quality
+				// from warm-starting, tuning and control rate; this can, because both
+				// optimizers see the same problem at the same state.
+				double J_mppi=std::numeric_limits<double>::quiet_NaN();
+				if(mppi_probe && !use_mppi){
+					std::vector<double> xp(x, x+5*nMPC*kMPC);
+					J_mppi = mppi_optimize(xp.data(), &track_line, max_steering_angle,
+						min_speed, max_speed, opt_params[0], opt_params[1],
+						last_delta, vel_adapt, opt_params, opt_params_vel.data());
+				}
+
 				double opttime1=ros::Time::now().toSec();
 				// Revision (R2.4): solve with MPPI on the identical formulation, or SLSQP.
 				nlopt_result optim=NLOPT_SUCCESS;
@@ -3366,10 +3455,21 @@ class GapBarrier
 				// passband proximity. TTC is not logged here (racing runs have no adversary).
 				if(run_logger.enabled()){
 					if(log_t0<0) log_t0=ros::Time::now().toSec();
+					// d_min is measured against the RAW scan, matching navigation_STLMPC and
+					// navigation_FGM, so the clearance column means the same thing in every
+					// table. The previous definition used the subsampled obstacle set, whose
+					// spacing grows adaptively until only max_obs points remain; a minimum
+					// over that subset is biased high. d_min_sub retains the old quantity so
+					// the size of that bias is recorded.
 					double d_min_all=max_lidar_range+100;
+					for(size_t io=0;io<fused_ranges.size();io++){
+						double dd=fused_ranges[io];
+						if(dd>0.01 && dd<d_min_all) d_min_all=dd;
+					}
+					double d_min_sub=max_lidar_range+100;
 					for(int io=0;io<num_obs;io++){
 						double dd=hypot(sub_obs[io][0],sub_obs[io][1]);
-						if(dd<d_min_all) d_min_all=dd;
+						if(dd<d_min_sub) d_min_sub=dd;
 					}
 					run_logger.row({
 						{"t", ros::Time::now().toSec()-log_t0},
@@ -3379,7 +3479,9 @@ class GapBarrier
 						{"J_init", J_init}, {"J_final", minf},
 						{"iters", (double)n_evals}, {"solve_time", solve_time},
 						{"timeout", (double)timed_out}, {"forcestop", (double)forcestop},
-						{"success", (double)successful_opt}
+						{"success", (double)successful_opt},
+						{"J_mppi", J_mppi},  // NaN unless mppi_probe:=1
+						{"d_min_sub", d_min_sub}
 					});
 				}
 			}

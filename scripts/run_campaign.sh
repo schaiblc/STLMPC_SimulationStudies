@@ -185,6 +185,26 @@ for mk in map4; do
   run_one "B1b-V-A3-$mk" $mk navigation_STLMPC "nMPC:=4 kMPC:=4  vehicle_velocity:=2.5"
 done
 
+# B7 -- DISABLED. Intent was to repeat the B1 sequential-line ablation on the physical
+# course geometry, to test whether two lines beat one at the nominal 16-sample horizon
+# on the tighter, more turn-dense courses the hardware ran on. The experiment*.pgm
+# grids cannot serve this purpose:
+#   * they are ~98% UNKNOWN space (1.7% free, 0.2% occupied) -- sparse AMCL grids, not
+#     drivable maps. Driven as-is the simulator treats unknown as obstacle, the planner
+#     sees hazard everywhere and the vehicle crawls at 0.23 m/s (verified).
+#   * filling unknown->free instead leaves the sparse wall segments floating in open
+#     space (free component 108-175 m2, 2.0 m clearance at the most open cell), so the
+#     vehicle drives between wall fragments rather than following the course.
+# Reconstructing the real layout needs the course geometry, not an automatic fill. If a
+# proper occupancy map of a physical course becomes available, add it to map_starts.yaml
+# and re-enable the block below (stop_distance:=0.5 is the hardware value).
+#
+# for mk in experiment1 experiment3; do
+#   run_one "B7-A1-$mk" $mk navigation_STLMPC "nMPC:=1 kMPC:=16 stop_distance:=0.5"
+#   run_one "B7-A2-$mk" $mk navigation_STLMPC "nMPC:=2 kMPC:=8  stop_distance:=0.5"
+#   run_one "B7-A3-$mk" $mk navigation_STLMPC "nMPC:=4 kMPC:=4  stop_distance:=0.5"
+# done
+
 # B2 -- velocity-constraint ablation, switchback map (map4), variable-velocity node
 run_one B2-V1 map4 navigation_STLMPC_vary_v "enable_gvsteer:=1 enable_gvobs:=1 hard_clamp_v:=0"
 run_one B2-V2 map4 navigation_STLMPC_vary_v "enable_gvsteer:=0 enable_gvobs:=1 hard_clamp_v:=0"
@@ -208,14 +228,49 @@ for v in 67 115 200 350 600;  do run_one "B3-s_theta-$v"   map4 navigation_STLMP
 run_one B4-FGM-map1 map1 navigation_FGM ""
 run_one B4-FGM-map2 map2 navigation_FGM ""
 run_one B4-FGM-map4 map4 navigation_FGM ""
-run_one B4-MPPI map4 navigation_STLMPC_vary_v "use_mppi:=1"
+# MPPI is given its best-faith configuration: warm-started nominal sequence and a
+# temperature scaled to the sample cost spread. Both were isolated one-at-a-time;
+# warm-starting raises mean speed 0.53->0.72 m/s and the adaptive temperature a
+# further 0.72->1.22, so reporting the untuned default would understate the baseline.
+run_one B4-MPPI map4 navigation_STLMPC_vary_v "use_mppi:=1 mppi_warm:=1 mppi_lambda:=-1"
 run_one B4-SQP  map4 navigation_STLMPC_vary_v "use_mppi:=0"   # matched SQP reference
+
+# B8 -- MPPI solution-quality PROBE (R2.2: is the SQP solution a poor local optimum?).
+# SQP drives; at every control step the identical problem instance is ALSO solved by
+# MPPI from the same Algorithm-2 initial guess, and both objectives are logged
+# (J_final, J_mppi). Unlike the closed-loop B4-MPPI race, this cannot be confounded by
+# warm-starting, tuning or control rate, because both optimizers see the same problem
+# at the same state. mppi_warm:=0 keeps each probe an independent solve from that guess.
+run_one B8-PROBE map4 navigation_STLMPC_vary_v "use_mppi:=0 mppi_probe:=1 mppi_warm:=1 mppi_lambda:=-1"
+
+# B4b -- the two final baseline rows.
+#  * FGM in the DYNAMIC encounter (map2, braking adversary), matching B5-R1/B6-N1.
+#    The adversary is not part of the occupancy grid, so a purely scan-based gap
+#    follower has no way to perceive it at all: this row shows what the detection and
+#    prediction branch of Section IV provides, which the heuristic cannot express.
+#  * MPPI at a matched COMPUTE budget. The 2048-rollout configuration takes 137.6 ms
+#    per step against SQP's 36 ms, so it also runs below the 10 Hz control rate; at
+#    mppi_K=64 (512 rollouts, ~34 ms) it is inside SQP's budget and controls at rate,
+#    removing that confound from the closed-loop comparison.
+run_one B4-FGM-dyn  map2 navigation_FGM "adv_enable:=1 adv_maneuver:=brake"
+run_one B4-MPPI-tm  map4 navigation_STLMPC_vary_v "use_mppi:=1 mppi_warm:=1 mppi_lambda:=-1 mppi_K:=64"
 
 # B5 -- robustness. Dynamic adversary (via TF->EKF) on the open map (map2).
 run_one B5-R1 map2 navigation_STLMPC "adv_enable:=1 adv_maneuver:=brake"
 run_one B5-R2 map2 navigation_STLMPC "adv_enable:=1 adv_maneuver:=swerve"
 run_one B5-R3 map2 navigation_STLMPC "adv_enable:=1 adv2_enable:=1 adv_maneuver:=straight"
 for s in 0.01 0.03 0.05;      do run_one "B5-R4-$s" map1 navigation_STLMPC "scan_std_dev:=$s beam_dropout_prob:=0.05"; done
+
+# B6 -- dynamic-obstacle PREDICTION BRANCH ablation (the third modular ablation the
+# reviewers asked for, alongside B1 sequential lines and B2 velocity constraints).
+# Identical to B5-R1/R2/R3 but with use_neural_net:=0, which disables the TF->EKF
+# detection/prediction branch that augments the scan with the adversary's projected
+# path. The adversary is not in the occupancy map, so with the branch off the ego is
+# effectively blind to it; the effect is therefore measured by minTTC / min_rel_dist
+# from the logged relative pose (compute_ttc.py), not by d_min against the map.
+run_one B6-N1 map2 navigation_STLMPC "adv_enable:=1 adv_maneuver:=brake use_neural_net:=0"
+run_one B6-N2 map2 navigation_STLMPC "adv_enable:=1 adv_maneuver:=swerve use_neural_net:=0"
+run_one B6-N3 map2 navigation_STLMPC "adv_enable:=1 adv2_enable:=1 adv_maneuver:=straight use_neural_net:=0"
 
 # B5 generalization -- unseen maps not used in the ablations (map3, and the map5 fork).
 run_one B5-GEN-m3 map3 navigation_STLMPC_vary_v ""

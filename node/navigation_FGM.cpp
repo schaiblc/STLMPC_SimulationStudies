@@ -82,6 +82,32 @@ public:
         drive_pub = nf.advertise<ackermann_msgs::AckermannDriveStamped>(drive_topic, 1);
     }
 
+    // Adversary pose in the EGO base frame, plus its speed by finite difference of
+    // the map-frame position. Logged so that min-TTC against the scripted adversary
+    // can be computed for this baseline exactly as it is for STLMPC -- FGM has no
+    // detection or prediction branch, so it never reacts to the adversary, and the
+    // resulting TTC is what a purely scan-based gap follower achieves.
+    bool adv_pose(double& x, double& y, double& th, double& v) {
+        geometry_msgs::TransformStamped tr, tm;
+        try {
+            tr = tf_buffer.lookupTransform(base_frame, "det_racecar_base_link", ros::Time(0));
+            tm = tf_buffer.lookupTransform(map_frame,  "det_racecar_base_link", ros::Time(0));
+        } catch (tf2::TransformException&) { return false; }
+        x = tr.transform.translation.x;
+        y = tr.transform.translation.y;
+        double qx=tr.transform.rotation.x, qy=tr.transform.rotation.y;
+        double qz=tr.transform.rotation.z, qw=tr.transform.rotation.w;
+        th = atan2(2.0*(qw*qz+qx*qy), 1.0-2.0*(qy*qy+qz*qz));
+        double mx=tm.transform.translation.x, my=tm.transform.translation.y;
+        double now=ros::Time::now().toSec();
+        v = 0.0;
+        if (adv_t_prev > 0.0 && now > adv_t_prev)
+            v = hypot(mx-adv_x_prev, my-adv_y_prev) / (now-adv_t_prev);
+        adv_x_prev=mx; adv_y_prev=my; adv_t_prev=now;
+        return true;
+    }
+    double adv_x_prev=0, adv_y_prev=0, adv_t_prev=-1;
+
     // Return the map-frame ego pose from TF; false if unavailable.
     bool ego_pose(double& x, double& y, double& th) {
         geometry_msgs::TransformStamped tf;
@@ -142,12 +168,29 @@ public:
         // goal, so phi_final reduces to phi_gap_c.
         double theta_head;
         if (best_start>=0) {
-            int iR = (best_start-1>=0)      ? best_start-1 : best_start; // right-bounding obstacle
-            int iL = (best_end+1<n)         ? best_end+1   : best_end;   // left-bounding obstacle
-            double aR=angle_of(iR), dR=range_of(iR);
-            double aL=angle_of(iL), dL=range_of(iL);
-            // median vector to the midpoint of the two obstacle points (P1+P2)/2:
-            theta_head = atan2(dR*sin(aR)+dL*sin(aL), dR*cos(aR)+dL*cos(aL));
+            // The gap-centre formula is defined by the two OBSTACLES bounding the gap.
+            // A gap may instead be bounded by the edge of the front window, where there
+            // is no obstacle; the beam just outside then lies beside or behind the
+            // vehicle and its range vector drags the heading rearward. Worse, when the
+            // whole front is open both bounds are window edges, giving
+            // atan2(d_L-d_R, ~0) -> +/-pi/2: the heading flips hard left or right on a
+            // negligible difference between the two edge ranges. Each side is therefore
+            // classified, and the median-vector form is used only where it applies.
+            int iR = best_start-1, iL = best_end+1;
+            bool obsR = (iR >= 0) && (angle_of(iR) >= -M_PI/2) && (range_of(iR) <= safe_distance);
+            bool obsL = (iL <  n) && (angle_of(iL) <=  M_PI/2) && (range_of(iL) <= safe_distance);
+            if (obsR && obsL) {
+                // canonical case: median vector to the midpoint of the two obstacles
+                double aR=angle_of(iR), dR=range_of(iR);
+                double aL=angle_of(iL), dL=range_of(iL);
+                theta_head = atan2(dR*sin(aR)+dL*sin(aL), dR*cos(aR)+dL*cos(aL));
+            } else {
+                // one or both bounds are the window edge: steer to the angular centre
+                // of the free gap, which reduces to straight ahead when the front is
+                // entirely open, as the heuristic intends.
+                theta_head = 0.5*(angle_of(best_start) + angle_of(best_end));
+            }
+            theta_head = std::max(-M_PI/2, std::min(M_PI/2, theta_head));
         } else {
             theta_head = 0.0; // no free gap: aim straight, rely on the supervisory stop
         }
@@ -171,12 +214,16 @@ public:
             double d_min=1e9;
             for (int i=0;i<n;++i){ double r=scan->ranges[i]; if(std::isfinite(r)&&r>0.01&&r<d_min) d_min=r; }
             double ex=0,ey=0,eth=0; ego_pose(ex,ey,eth);
+            double ax=0, ay=0, ath=0, av=0;
+            int ad = adv_pose(ax,ay,ath,av) ? 1 : 0;
             run_logger.row({
                 {"t", ros::Time::now().toSec()-log_t0},
                 {"x", ex}, {"y", ey}, {"theta", eth},
                 {"v_cmd", v}, {"delta_cmd", delta},
                 {"d_min", d_min}, {"fwd_min", fwd_min},
-                {"theta_head", theta_head}
+                {"theta_head", theta_head},
+                {"det_active", (double)ad}, {"det_x", ax}, {"det_y", ay},
+                {"det_theta", ath}, {"det_v", av}
             });
         }
     }
